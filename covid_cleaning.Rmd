@@ -1,0 +1,765 @@
+---
+title: "covid cleaning"
+author: "Thomas Lieber"
+date: "9-3-2022"
+output: html_document
+---
+
+to do:
+- hoe beschrijven we bijwerkingen die niet voorbij zijn?
+- personen onder 16 eruit
+- sollicited kolom toevoegen (lijst leontine)
+- seriousness kolom toeveoegen
+
+
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie')
+```
+
+```{r, include=FALSE}
+rm(list = ls())
+#library
+library(data.table)
+library(flextable)
+library(ggplot2)
+library(ggridges)
+library(gridExtra)
+library(ggthemes)
+library(tidyverse)
+library(RODBC)
+library(rjson)
+library(readxl)
+library(lubridate)
+library(survival)
+library(survminer)
+```
+
+# read data
+```{r}
+#df = read.csv2("raw_data.csv")
+
+df = read.csv2("ADR_raw_data.csv")
+df_additional = read.csv2("User_info_raw_data.csv")
+df_adr_follow =read.csv2("ADR_follow_up_raw_data.csv")
+#kan dit ook joinen ipv sloom deze manier
+
+```
+
+# cleaning vaccine
+```{r}
+df$vaccine = NA
+uids = unique(df$UserID)
+for(i in uids){
+  if(i %in% df$UserID){
+    df$vaccine[which(df$UserID == i)] = df_additional$vaccine[which(df_additional$UserID == i)][1]
+  }
+}
+
+df$vaccine[is.na(df$vaccine)] = "Onbekend"
+df <- df %>% rename(startdate_reaction = startdate) %>% mutate(survey_complete_date = as.Date(survey_complete_date))
+```
+
+
+# cleaning QoL
+```{r}
+survey_nos = df_adr_follow$survey_no
+enddate_locs = df_adr_follow$enddate_loc
+enddate_locs[which(enddate_locs == 0 | is.na(enddate_locs))] = 6
+qol_names_loc = which(colnames(df_adr_follow) %in% c("qol_1",
+                                                     "qol_2",
+                                                     "qol_3",
+                                                     "qol_4",
+                                                     "qol_5",
+                                                     "qol_6"))
+
+outcome_loc = which(colnames(df_adr_follow) %in% c("outcome_1",
+                                                     "outcome_2",
+                                                     "outcome_3",
+                                                     "outcome_4",
+                                                     "outcome_5",
+                                                     "outcome_6"))
+ 
+qol_constant = qol_names_loc[1]-1
+outcome_constant = outcome_loc[1]-1
+
+i = 1
+progress = seq(0, nrow(df_adr_follow), round(nrow(df_adr_follow)/10))
+for(i in 1:nrow(df_adr_follow)){
+  #row = df_adr_follow[i,]
+  if(i %in% progress){
+    print(paste(round(i/nrow(df_adr_follow) * 100,0), "%", sep = ""))
+  }
+  ind = survey_nos[i]:enddate_locs[i]
+  if(length(ind) < 6){
+    na_ind = which(!(qol_names_loc %in% (ind + qol_constant)))
+    #outcome_na_ind = which(!(outcome_loc %in% (ind + outcome_constant)))
+    df_adr_follow[i,c(na_ind+qol_constant, na_ind + outcome_constant)] = NA
+  }
+}
+```
+
+#remove extra enddates  
+```{r}
+#df = df[which(df$survey_no > df$enddate_loc),]
+#df = df[-which(df$survey_no > df$enddate_loc & df$enddate_loc != 0),]
+```
+
+#remove extra rows with empty outcome if there is an alternative (ignore)
+- kan misschien sneller door df te initializen ipv appenden??
+```{r}
+df2 = NULL
+part1 = df[which(is.na(df$survey_no)),]
+part2 = df[-which(is.na(df$survey_no)),]
+uids = unique(part2$UserID)
+progress = seq(0, length(uids), round(length(uids)/10))
+for(i in 1:length(uids)){
+  if(i %in% progress){
+    print(paste(round(i/length(uids) * 100,0), "%", sep = ""))
+    
+  }
+  uid = uids[i]
+  rows = part2[which(part2$UserID == uid),]
+  survey_nos = distinct(rows, survey_no)[,]
+  for(no in survey_nos){
+    
+    rows2 = rows[which(rows$survey_no == no),]
+    pts = distinct(rows2, PTName)[,]
+    #for(k in 1:nrow(pts)){
+    for(pt in pts){
+        #pt = pts[k]
+        
+        rows3 = rows2[which(rows2$PTName == pt),]
+        #df2 = rbind(df2, rows3)
+        if(nrow(rows3)>1){
+          na_row_sum = rowSums(is.na(rows3))
+          ind = which(na_row_sum == min(na_row_sum))
+          df2 = rbind(df2, rows3[ind,])
+        }
+        if(nrow(rows3) == 1){
+          df2 = rbind(df2, rows3)
+        }
+    }
+    
+  }
+}
+
+#df_backup = df2
+#progress_backup = paste(round(i/length(uids) * 100,0), "%", sep = "")
+
+fname <- paste(
+  "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\",
+  "cleansteplong.csv"
+  ,sep=""
+)
+write.csv2(df_backup, fname)
+
+```
+
+```{R}
+
+df = read.csv2("S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\cleansteplong.csv")
+```
+
+
+
+
+
+# onbekend
+```{r}
+#clean is over:
+partone = df[-which(is.na(df$QoL) & (is.na(df$outcome) | df$outcome == "")),]
+parttwo = df[which(is.na(df$QoL) & (is.na(df$outcome) | df$outcome == "")),]
+
+df_cleaned = NULL
+uids = unique(parttwo$UserID)
+for(i in 1:length(uids)){
+  rows = parttwo[parttwo$UserID == uids[i],]
+  pts = unique(rows$PTName)
+  for(i in 1:length(pts)){
+    pt = pts[i]
+    rows_pt = rows[rows$PTName == pt,]
+    rows_pt = rows_pt[order(rows_pt$survey_no),]
+    df_cleaned = rbind(df_cleaned, rows_pt[1,]) 
+  }
+}
+
+df = rbind(partone, df_cleaned)
+```
+
+```{r, include=FALSE}
+get_ttr <- function(df){
+  # Function:   Extract date and or days hours from 'enddate'
+  # Author:     Jurriaan Jansen
+  # Date:       24-02-2022
+  # update:     02-03-2022 set -ttr's to 0 (Thomas)
+  # Known Bugs: None
+  df$tto_date <- gsub('/', '-', df$startdate)
+  df$tto_date <- str_extract(df$tto_date, '[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}')
+  df$tto_date <- as.Date(df$tto_date, format="%m-%d-%Y")
+  
+  df$ttr_date <- gsub('/', '-', df$enddate)
+  df$ttr_date <- str_extract(df$ttr_date, '[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}')
+  df$ttr_date <- as.Date(df$ttr_date, format="%m-%d-%Y")
+  df$ttr_months <- str_extract(df$enddate, '[0-9]{1,}.Months')
+  df$ttr_months <- as.numeric(gsub("([0-9]+).*$", "\\1", df$ttr_months))
+  df$ttr_weeks <- str_extract(df$enddate, '[0-9]{1,}.Weeks')
+  df$ttr_weeks <- as.numeric(gsub("([0-9]+).*$", "\\1", df$ttr_weeks))
+  df$ttr_days <- str_extract(df$enddate, '[0-9]{1,}.Days')
+  df$ttr_days <- as.numeric(gsub("([0-9]+).*$", "\\1", df$ttr_days))
+  df$ttr_hours <- str_extract(df$enddate, '[0-9]{1,}.Hours')
+  df$ttr_hours <- as.numeric(gsub("([0-9]+).*$", "\\1", df$ttr_hours))
+  df$ttr_minutes <- str_extract(df$enddate, '[0-9]{1,}.Minutes')
+  df$ttr_minutes <- as.numeric(gsub("([0-9]+).*$", "\\1", df$ttr_minutes))
+  
+  df <- df %>%
+    mutate(
+      'ttr_date_diff' = interval(tto_date, ttr_date)
+      ) %>%
+    mutate(
+    'time_to_recovery_hours' = case_when(
+      !is.na(ttr_minutes)  ~  ttr_minutes / 60,
+      !is.na(ttr_hours)  ~  ttr_hours,
+      !is.na(ttr_days)  ~  ttr_days * 24,
+      !is.na(ttr_weeks)  ~  ttr_weeks * 168,
+      !is.na(ttr_months)  ~  ttr_weeks * 720,
+      !is.na(ttr_date)  ~  as.numeric(ttr_date_diff, 'hours')
+    )
+  )
+  
+  df <- df %>%
+    # select(
+    #   -tto_date, -ttr_date, -ttr_months, -ttr_weeks, -ttr_days, -ttr_hours, -ttr_minutes, -ttr_date_diff
+    #   ) %>%
+    mutate(
+        #'time_to_recovery_hours' = round(ifelse(time_to_recovery_hours > 0, time_to_recovery_hours, NA), 2)
+        'time_to_recovery_hours' = round(time_to_recovery_hours, 2)
+      )
+  return(round(df$time_to_recovery_hours,2))
+}
+
+
+df$time_to_recovery_hours <- get_ttr(df)
+#ttr_test = df[,c("startdate", "enddate", "time_to_recovery_hours")]
+```
+
+# dose
+```{r}
+start_adr_date <- str_extract(df$startdate_reaction, '[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}')
+#start_adr_date
+start_adr_date <- as.Date(start_adr_date, format="%m/%d/%Y")
+#start_adr_date
+
+tto_days <- str_extract(df$startdate_reaction, '[0-9]{1,}.Days')
+tto_days <- as.numeric(gsub("([0-9]+).*$", "\\1", tto_days))
+tto_hours <- str_extract(df$startdate_reaction, '[0-9]{1,}.Hours')
+tto_hours <- as.numeric(gsub("([0-9]+).*$", "\\1", tto_hours))
+tto_weeks <- str_extract(df$startdate_reaction, '[0-9]{1,}.Weeks')
+tto_weeks <- as.numeric(gsub("([0-9]+).*$", "\\1", tto_weeks))
+
+
+startdate_tto = start_adr_date
+startdate_tto[which(!is.na(tto_hours) | !is.na(tto_days) | !is.na(tto_weeks))] = NA
+survey_complete_date = df$survey_complete_date
+startdate_tto[is.na(startdate_tto)] = as.Date(survey_complete_date[is.na(startdate_tto)], format="%m/%d/%Y")
+
+start_or_survey = str_split(startdate_tto, pattern = "-")
+start_or_survey_int = numeric(length(start_or_survey))
+
+dose2 = str_split(df$vaccine_date2, pattern = "-")
+dose2_int = numeric(length(dose2))
+suppressWarnings({
+for(i in 1:length(dose2_int)){
+  start_or_survey_int[i] = as.numeric(paste(start_or_survey[[i]], collapse = ""))
+  dose2_int[i] = as.numeric(paste(dose2[[i]], collapse = ""))
+}
+})
+
+# dose = ifelse(start_or_survey_int[which(is.na(dose2_int))] < dose2_int[which(is.na(dose2_int))],
+#               1,
+#               2)
+
+
+
+df$dose = NA
+df$dose[which(start_or_survey_int >= dose2_int)]  = 2
+df$dose[which(start_or_survey_int < dose2_int)]  = 1
+df$dose[df$vaccine == "Janssen"] = 1
+df$dose[is.na(df$vaccine_date2)] = 1
+
+
+
+```
+
+
+
+```{r, include=FALSE}
+#df <- df %>% rename(startdate_reaction = startdate) %>% mutate(survey_complete_date = as.Date(survey_complete_date))
+
+get_tto <- function(df){
+  # Function:   Extract date and or days hours from 'startdate'
+  # Author:     Jurriaan Jansen
+  # Date:       24-02-2022
+  # Known Bugs: None
+  #df$startdate_reaction <- gsub('/', '-', df$startdate_reaction)
+  #df$start_adr_date <- str_extract(df$startdate_reaction, '[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}')
+  #df$start_adr_date <- as.Date(df$start_adr_date, format="%m-%d-%Y")
+  #df$start_adr_date = as.Date(df$startdate_reaction, format="%m/%d/%Y")
+  
+  df$start_adr_date <- str_extract(df$startdate_reaction, '[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}')
+  #start_adr_date
+  df$start_adr_date <- as.Date(df$start_adr_date, format="%m/%d/%Y")
+  #start_adr_date
+  
+  df$vaccine_date = as.Date(ifelse(df$dose == 1, df$vaccine_date1, df$vaccine_date2), format = "%Y-%m-%d")
+  df$tto_days <- str_extract(df$startdate_reaction, '[0-9]{1,}.Days')
+  df$tto_days <- as.numeric(gsub("([0-9]+).*$", "\\1", df$tto_days))
+  df$tto_hours <- str_extract(df$startdate_reaction, '[0-9]{1,}.Hours')
+  df$tto_hours <- as.numeric(gsub("([0-9]+).*$", "\\1", df$tto_hours))
+  df$tto_weeks <- str_extract(df$startdate_reaction, '[0-9]{1,}.Weeks')
+  df$tto_weeks <- as.numeric(gsub("([0-9]+).*$", "\\1", df$tto_weeks))
+  df$tto_months <- str_extract(df$startdate_reaction, '[0-9]{1,}.Months')
+  df$tto_months <- as.numeric(gsub("([0-9]+).*$", "\\1", df$tto_months))
+  
+  # Rule based generation of time to onset calculation.
+  df <- df %>%  
+    mutate(
+      'tto_date_diff' = interval(vaccine_date, start_adr_date)
+      ) %>% 
+    mutate(
+    'time_to_onset_hours' = case_when(
+      !is.na(tto_hours)  ~  tto_hours,
+      !is.na(tto_days)  ~  tto_days * 24,
+      !is.na(tto_weeks)  ~  tto_weeks * 24 * 7,
+      !is.na(tto_months)  ~  tto_months * 24 * (365.25 / 12),
+      !is.na(start_adr_date)  ~  as.numeric(tto_date_diff, 'hours'))#,
+
+      # 'tto_startdate' = case_when(
+      # !is.na(tto_hours)  ~  NA,
+      # !is.na(tto_days)  ~  NA,
+      # !is.na(tto_weeks)  ~  NA,
+      # !is.na(start_adr_date)  ~  start_adr_date
+      # )
+    )
+   
+  df <- df %>% select(
+     -tto_days, -tto_hours, -tto_date_diff
+    ) %>% mutate(
+      #'time_to_onset_hours' = round(ifelse(time_to_onset_hours > 0, time_to_onset_hours, NA), 2)
+      'time_to_onset_hours' = round(time_to_onset_hours, 2)
+    )
+  return(df$time_to_onset_hours)
+}
+df$time_to_onset_hours = get_tto(df)
+
+```
+
+# Hoeveel otherae 0 TTO of 0 TTR (ignore)
+```{r}
+loc = df$location
+loc_split = str_split(loc, pattern = "_")
+for(i in 1:length(loc)){
+  loc[i] = loc_split[[i]][1]
+}
+ind_ae = which(loc == "ae")
+df_ae = df[ind_ae,]
+df_ae_tto_or_ttr = df_ae[which(df_ae$time_to_onset_hours == 0 | df_ae$time_to_recovery_hours == 0),]
+df_ae_tto_or_ttr2 = df_ae[which(df_ae$enddate == "0 Days" | df_ae$startdate_reaction == "0 Days" ),]
+
+
+fname <- paste(
+  "S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie\\",
+  "df_ae_tto_or_ttr.csv"
+  ,sep=""
+)
+write.csv2(df_ae_tto_or_ttr, fname)
+
+fname <- paste(
+  "S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie\\",
+  "df_ae_tto_or_ttr2.csv"
+  ,sep=""
+)
+write.csv2(df_ae_tto_or_ttr2, fname)
+
+
+```
+
+# sketchy tto or ttr (ignore)
+```{r}
+max_ttr = 24 * (365/0.75) 
+sketchy_tto_ttr = df[which(df$time_to_onset_hours >= max_ttr |
+                             df$time_to_onset_hours < 0 |
+                             df$time_to_recovery_hours >= max_ttr |
+                             df$time_to_recovery_hours < 0),]
+
+sketchy_tto_ttr$discrepantie = NA
+sketchy_tto_ttr$discrepantie[which(sketchy_tto_ttr$time_to_onset_hours >= max_ttr)] = "te hoge max TTO"
+sketchy_tto_ttr$discrepantie[which(sketchy_tto_ttr$time_to_onset_hours < 0)] = "min TTO"
+sketchy_tto_ttr$discrepantie[which(sketchy_tto_ttr$time_to_recovery_hours >= max_ttr)] = "te hoge max TTR"
+sketchy_tto_ttr$discrepantie[which(sketchy_tto_ttr$time_to_recovery_hours < 0)] = "min TTR"
+
+sketchy_tto_ttr = sketchy_tto_ttr[,c("UserID",
+                                     "survey_no",
+                                     "dose",
+                                     "PTName",
+                                     "survey_complete_date",
+                                     "vaccine_date1",
+                                     "vaccine_date2",
+                                     "startdate_reaction",
+                                     "enddate",
+                                     "time_to_onset_hours",
+                                     "time_to_recovery_hours",
+                                     "discrepantie")]
+
+
+fname <- paste(
+  "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\",
+  "sketchy_tto_ttr3.csv"
+  ,sep=""
+)
+write.csv2(sketchy_tto_ttr, fname)
+
+
+
+```
+
+# ignore
+```{r}
+df_tto = df[,c("UserID",
+               "PTName",
+               "time_to_onset_hours",
+               "dose")]
+df_tto = distinct(df_tto)
+df_tto$PTName = as.factor(df_tto$PTName)
+
+average_tto_df = df_tto %>% 
+          group_by(PTName) %>%
+          summarize(N = length(time_to_onset_hours),
+                    Mean = mean(time_to_onset_hours, na.rm = T),
+                    SD = sd(time_to_onset_hours, na.rm = T),
+                    )
+average_tto_df = as.data.frame(average_tto_df)
+average_tto_df = average_tto_df[order(-average_tto_df$N),]
+ridge_pt_tto = NULL
+
+biggest_pts = average_tto_df$PTName[1:10]
+
+
+ridge_pt_tto = ggplot(df_tto[which(df_tto$PTName %in% biggest_pts),], aes(x = time_to_onset_hours, y = PTName, fill = stat(x))) +
+  geom_density_ridges_gradient() +
+  #geom_density_ridges(alpha=0.6, stat="binline", bins=250) +
+  xlim(c(0, 250)) +
+  ggtitle(paste("Ridgeplot Time to onset ", length(biggest_pts)," most common PT's", sep = "")) +
+  scale_fill_viridis_c(name = "Depth", option = "C") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(df_tto[which(df_tto$PTName %in% biggest_pts),], aes(x = time_to_onset_hours, y = PTName, fill = PTName)) +
+  geom_density_ridges(stat = "binline", bins = 10, scale = 2.2) +
+  scale_y_discrete(expand = c(0, 0)) +
+  #scale_x_discrete() +
+  coord_cartesian(clip = "off") +
+  xlim(c(0, 250)) +
+  theme_ridges()
+
+#geom_density_ridges(alpha=0.6, stat="binline", bins=20) +
+
+ridge_pt_tto#+ scale_colour_Publication() + theme_Publication()
+
+
+```
+
+1. Deze codering daarvan is onderverdeeld in een aantal voorgedefinieerde symptomen: roodheid, zwelling etc. Nu hebben we de codeerafspraak dat als er van deze injection site erythema, injection site warmth, injection site swelling en injection site pain 2 of meer gecodeerd zijn bij een deelnemer (op zelfde tijdstip) dat er dan injection site inflammation bijgecodeerd wordt. 
+
+2.  De injection site inflammation wordt overruled door de Extensive limb swelling. Die vraag wordt alleen gesteld (en dus ook codering) als injection site erythema en/of injection site swelling is aangevinkt. Vraag is dus of dat altijd gedaan is (deze staat dan als ipo ingevuld bij de anders namelijk of als extensive limb swelling)
+
+# (ignore)
+```{r}
+inf_ext_subset = df[which(df$PTName == "Injection site inflammation" | df$PTName == "Extensive swelling of vaccinated limb"),]
+uids = unique(df$UserID)
+
+sketchy_users = NULL
+
+for(j in 1:6){
+  uids = unique(inf_ext_subset$UserID[inf_ext_subset$survey_no == j])
+  for(i in 1:length(uids)){
+    uid = uids[i]
+    rows = inf_ext_subset[inf_ext_subset$UserID == uid & inf_ext_subset$survey_no == j,]
+    if(sum(c("Injection site inflammation", "Extensive swelling of vaccinated limb") %in% rows$PTName) == 2){
+      sketchy_users = rbind(sketchy_users, rows)
+    }
+  }
+}
+
+#inflamation+extensivelimb
+
+fname <- paste(
+  "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\",
+  "inflamation+extensivelimb.csv"
+  ,sep=""
+)
+write.csv2(sketchy_users, fname)
+
+ij_pts = c("Injection site erythema",
+           "Injection site swelling",
+           "Injection site warmth",
+           "Injection site pain"
+           #"Injection site inflammation",
+           #"Extensive swelling of vaccinated limb"
+           )
+
+ij_subset = df[which(df$PTName %in% c(ij_pts, "Injection site inflammation", "Extensive swelling of vaccinated limb")),]
+#sketchy_users2 = NULL
+df_infl = NULL
+for(j in 1:6){
+  uids = unique(ij_subset$UserID[ij_subset$survey_no == j])
+  for(i in 1:length(uids)){
+    uid = uids[i]
+    rows = ij_subset[which(ij_subset$UserID == uid & ij_subset$survey_no == j),]
+    
+    if(sum(ij_pts %in% unique(rows$PTName)) >= 2){
+
+      if((sum(c("Injection site inflammation", "Extensive swelling of vaccinated limb") %in% unique(rows$PTName))) == 0){
+
+        df_infl = rbind(df_infl, rows)
+      }
+      
+    }
+  }
+}
+
+
+fname <- paste(
+  "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\",
+  "inflammation_missing.csv"
+  ,sep=""
+)
+write.csv2(df_infl, fname)
+
+```
+
+# double side effects (ignore)
+```{r}
+double_sideeffects = NULL
+uids = unique(df$UserID)
+
+progress = seq(0, length(uids), round(length(uids)/10))
+for(i in 1:length(uids)){
+
+  if(i %in% progress){
+    print(paste(round(i/length(uids) * 100,0), "%", sep = ""))
+  }
+  uid = uids[i]
+  rows_uid = df[which(df$UserID == uid),]
+  pt_table = as.data.frame(table(rows_uid$PTName))
+  pt_table = pt_table[which(pt_table$Freq>1),]
+  if(length(pt_table)>0){
+    for(j in 1:nrow(pt_table)){
+      pt = pt_table[j,1]
+      #rows_uid_pt =
+      for(dose in 1:2){
+        start_dates = rows_uid$startdate_reaction[which(rows_uid$PTName == pt & rows_uid$dose == dose)]
+        end_dates = rows_uid$enddate[which(rows_uid$PTName == pt & rows_uid$dose == dose)]
+        
+        if(length(unique(start_dates)) > 1 | length(unique(end_dates)) > 1){
+          save_rows = rows_uid[which(rows_uid$PTName == pt & rows_uid$dose == dose),]
+
+          if(length(unique(start_dates)) >= length(unique(end_dates))){
+            dist_rows = distinct(save_rows, startdate_reaction, .keep_all = T)
+          }
+          if(length(unique(start_dates)) < length(unique(end_dates))){
+            dist_rows = distinct(save_rows,  enddate, .keep_all = T)
+          }
+          
+          double_sideeffects = rbind(double_sideeffects, dist_rows)
+          
+        }
+      }
+    }
+  }
+}
+
+# al_gecleaned = read_excel("S:/Kernproces Monitoring/1. LIM inhoudelijk/3. Onderzoeken/1. Lopend/Corona LIM/Queries/Cleaning/To do bestanden voor cleaning/double_side_effects_new_leontine.xlsx", sheet = "Blad1")
+
+# cleaned_names = colnames(al_gecleaned)
+# double_sideeffects = double_sideeffects[,cleaned_names[-which(cleaned_names %in% c("comment", "klaar"))]]
+# al_gecleaned2 = al_gecleaned[,cleaned_names[-which(cleaned_names %in% c("comment", "klaar"))]]
+# 
+# double_sideeffects = as.data.frame(apply(double_sideeffects, 2, as.character))
+# al_gecleaned2 = as.data.frame(apply(al_gecleaned2, 2, as.character))
+# 
+# al_gecleaned2$dose = as.integer(al_gecleaned2$dose)
+# double_sideeffects$dose = as.integer(double_sideeffects$dose)
+# 
+# al_gecleaned2$survey_no = as.integer(al_gecleaned2$survey_no)
+# double_sideeffects$survey_no = as.integer(double_sideeffects$survey_no)
+# 
+# double_prep = rbind(al_gecleaned2, double_sideeffects)
+# double_prep$enddate[which(double_prep$enddate == "NA")] = NA
+# ind_na = which(double_out == "NA", arr.ind = T)
+# double_prep[ind_na] = NA
+# 
+# ds2 = as.data.table(double_sideeffects)
+# alclean = as.data.table(al_gecleaned2)
+# double_out = fsetdiff(ds2, alclean, all = T)
+
+#test = double_sideeffects[which(double_sideeffects$UserID == "00C238C6-4A57-4F26-8790-D3FB648E8077" & double_sideeffects$PTName == "Headache"),]
+#test2 = test2 = al_gecleaned2[which(al_gecleaned2$UserID == "00C238C6-4A57-4F26-8790-D3FB648E8077"),]
+
+# hash_test = character(nrow(double_sideeffects))
+# for(i in 1:nrow(double_sideeffects)){
+#   setup = c()
+#   for(j in 1:9){
+#     setup = c(setup, as.character(double_sideeffects[i,j]))
+#   }
+#   hash_test[i] = paste(setup, collapse = "xx")
+# }
+# 
+# 
+# hash_test2 = character(nrow(al_gecleaned2))
+# for(i in 1:nrow(al_gecleaned2)){
+#   setup = c()
+#   for(j in 1:9){
+#     setup = c(setup, as.character(al_gecleaned2[i,j]))
+#   }
+#   hash_test2[i] = paste(setup, collapse = "xx")
+# }
+# ind_remove = which(hash_test %in% hash_test2)
+# double_out = double_sideeffects[-ind_remove,]
+
+# double_out = distinct(double_prep, UserID, survey_no, PTName, startdate_reaction, enddate, outcome, .keep_all = T)
+# dim(double_out)
+# uids = unique(double_prep$UserID)
+# double_out = NULL
+# for(i in 1:length(uids)){
+#   uid = uids[i]
+#   for(d in 1:2){
+#     rows = double_prep[which(double_prep$UserID == uid & double_prep$dose == d),]
+# 
+#     qs = distinct(rows, survey_no)[,]
+#     for(q in qs){
+#       rows2 = rows[which(rows$survey_no == q),]
+#       pts = distinct(rows2, PTName)[,]
+#       for(pt in pts){
+#         rows3 = rows2[which(rows2$PTName == pt),]
+#         if(nrow(rows3)==1){
+#           double_out = rbind(double_out, rows3)
+#         }
+#       }
+#     } 
+#   }
+# }
+
+
+# fname <- paste(
+#   "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\",
+#   "double_side_effects3.csv"
+#   ,sep=""
+# )
+# write.csv2(double_sideeffects, fname)
+
+double_pyrexia =double_sideeffects[which(double_sideeffects$PTName == "Pyrexia"),]
+# fname <- paste(
+#   "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\",
+#   "double_pyrexia.csv"
+#   ,sep=""
+# )
+# write.csv2(double_pyrexia, fname)
+```
+
+#eerste melding (ignore)
+```{r}
+#gamble = distinct(df, UserID, PTName, .keep_all = T)
+u_ids = unique(df$UserID)
+save = NULL
+i = 1
+progress = seq(0, length(u_ids), round(length(u_ids)/10))
+for(i in 1:length(u_ids)){
+  if(i %in% progress){
+    print(paste(round(i/length(u_ids) * 100,0), "%", sep = ""))
+  }
+  uid = u_ids[i]
+  rows = df[which(df$UserID == uid),]
+  pts = distinct(rows, PTName)[,]
+  for(d in 1:2){
+    for(pt in pts){
+      pt_rows = rows[which(rows$PTName == pt & rows$dose == d),]
+      first_pt_row = pt_rows[which.min(pt_rows$survey_no),]
+      first_pt_row$outcome = pt_rows$outcome[which.max(pt_rows$survey_no)]
+      save = rbind(save, first_pt_row)
+    }
+  }
+}
+
+
+
+fname <- paste(
+  "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\",
+  "single_side_effect.csv"
+  ,sep=""
+)
+write.csv2(save, fname)
+
+
+
+```
+
+
+# oude query
+```{r}
+compare <- read_excel("S:/Kernproces Monitoring/1. LIM inhoudelijk/3. Onderzoeken/1. Lopend/Corona LIM/Wekelijkse overzichten/2022-02-18_lim_weekly_report_v7.xlsx")
+
+```
+
+# save data
+```{r}
+fname <- paste(
+  "S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie\\",
+  "ADR_cleaned_data.csv"
+  ,sep=""
+)
+write.csv2(df, fname)
+
+# fname <- paste(
+#   "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\",
+#   "dynamic_query_v7.csv"
+#   ,sep=""
+# )
+# write.csv2(df, fname)
+
+
+fname <- paste(
+  "S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie\\",
+  format(Sys.time(), "%Y-%m-%d %H.%M"),
+  "ADR_cleaned_data.csv"
+  ,sep=""
+)
+write.csv2(df, fname)
+
+fname <- paste(
+  "S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie\\",
+  format(Sys.time(), "%Y-%m-%d %H.%M"),
+  "ADR_follow_up_cleaned_data.csv"
+  ,sep=""
+)
+write.csv2(df_adr_follow, fname)
+
+fname <- paste(
+  "S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie\\",
+  "ADR_follow_up_cleaned_data.csv"
+  ,sep=""
+)
+write.csv2(df_adr_follow, fname)
+
+
+
+# fname <- paste(
+#   "S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie\\",
+#   format(Sys.time(), "%Y-%m-%d %H.%M"),
+#   "inflamation+extensivelimb.csv"
+#   ,sep=""
+# )
+# write.csv2(sketchy_users, fname)
+
+```
+
+
+

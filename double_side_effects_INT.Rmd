@@ -1,0 +1,1230 @@
+---
+title: "double side effects"
+author: "Thomas Lieber"
+date: "1-6-2022"
+output: html_document
+---
+# set directory
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie')
+```
+
+# library
+```{r, include=FALSE}
+rm(list = ls())
+#library
+library(flextable)
+library(ggplot2)
+library(ggridges)
+library(gridExtra)
+library(ggthemes)
+library(tidyverse)
+library(openxlsx)
+library(RODBC)
+library(rjson)
+library(readxl)
+library(lubridate)
+library(survival)
+library(survminer)
+```
+
+#query
+```{r}
+databases = c("BELGIUM", "FRANCE", "ITALY", "UK")
+
+get_all_data <- function(database){
+  DB_string = paste("Driver={SQL Server};Server=NLLARSQL53;Database=FLEXLIM_COVID_V6_", database, "_ANALYSE;Trusted_Connection=Yes", sep = "")
+
+
+  var_to_pt <- function(x){
+    var_names = c("headache", "notfeelingwell", "myalgia","fatigue", "shiver", "jointpain", "nausea")
+    pt_names = c("headache", "malaise", "myalgia", "fatigue", "chills", "arthralgia", "nausea")
+    if(!(x %in% var_names)){
+      stop("x not in var_names")
+    }
+    ind = which(var_names == x)
+    return(pt_names[ind])
+  }
+  
+  # first part query 
+  # sets up first part of the query. input is the number of the questionaire
+  first_part <- function(q_num, vaccine_index){
+    first_part = character(16)
+    first_part[1] = "SELECT DISTINCT"
+    first_part[2] = "study.UserID"
+    first_part[3] = paste(",", q_num, " AS survey_no", sep = "") #",1 AS survey_no" 
+    first_part[4] = paste(",CONVERT(DATE,q", q_num, ".Completed) AS survey_complete_date", sep = "")   #,q1.Completed AS survey_complete_date
+    first_part[5] = ",med.SOCName"
+    first_part[6] = ",med.PTName"
+    first_part[7] = ",llt.AutoID AS ADR_ID"
+    first_part[8] = ",CASE" 
+    first_part[9] = "  WHEN t_1.Suspect_Covid_Vaccin_Vac_Date1_Date IS NOT NULL THEN CONVERT(DATE, t_1.Suspect_Covid_Vaccin_Vac_Date1_Date)" 
+    first_part[10] = "  WHEN b_1.Suspect_Covid_Vaccin_Vac_Date1_Date IS NOT NULL THEN CONVERT(DATE, b_1.Suspect_Covid_Vaccin_Vac_Date1_Date)"
+    first_part[11] = "END AS vaccine_date1"
+    vaccine = ",CASE"
+    for(i in 1:6){
+      if(vaccine_index[i] != 0){
+        vaccine = c(vaccine, paste("  WHEN q", i, "_1.Suspect_COVID_Vaccin_Vac_Date2_Date IS NOT NULL THEN CONVERT(DATE, q", i, "_1.Suspect_COVID_Vaccin_Vac_Date2_Date)", sep = ""))
+      }
+      
+    }
+    vaccine = c(vaccine, "END AS 'vaccine_date2'")
+    return(c(first_part, vaccine))
+  }
+  
+  var_names = c("headache", "notfeelingwell", "myalgia","fatigue", "shiver", "jointpain", "nausea")
+  l_var_names = length(var_names)
+  ae_matrix_new_end = matrix(0, nrow = 6, ncol = l_var_names) # enddate index matrix, equal to 1 if present, 2 if present and enddate is new, 0 else. rows represent the questionnaire and columns represent the ae variables. 
+  ae_matrix_end = matrix(0, nrow = 6, ncol = l_var_names) # enddate index matrix, equal to 1 if present, 2 if present and enddate is new, 0 else. rows represent the questionnaire and columns represent the ae variables. 
+  ae_matrix_startdate = matrix(0, nrow = 6, ncol = l_var_names)
+  ae_matrix_qol = matrix(0, nrow = 6, ncol = l_var_names)
+  ae_matrix_vaccine = matrix(0, nrow = 6, ncol = l_var_names)
+  ae_matrix_llt = numeric(6)
+  
+  
+  
+  sus_vaccine = str_split("suspect_covid_vaccin_vac_date2_date", pattern = "_")[[1]]
+  
+  db <- odbcDriverConnect(DB_string)
+  for(q_num in 1:6){ # check what enddate, startdate and qol variables there are based on variables in questionnaire 1 - 6
+      query = paste("SELECT *",
+                    paste("FROM [Vragenlijst ", q_num, " onderzoek coronavaccin_1]", sep = ""),
+                    sep = "") # setup query that returns all variables from questionnaire q_num
+     
+      df_adr <- sqlQuery(db, query, rows_at_time = 1) # query q_num
+      
+      var_names_db = tolower(colnames(df_adr)) # get colnames and set capital letters to lower
+      split_names = strsplit(var_names_db, split = "_") # split the names of the variables on "_"
+      for(i in 1:length(var_names_db)){ # loop through the variables and see whether they are an index for enddate, startdate or qol index matrices
+        test = split_names[[i]] # select split var name
+        check = (any(var_names %in% test) + "enddate" %in% test) * 1 - "value" %in% test # check if test is enddate variable for otherae and does not have 'value' in its name.
+        check2 = (any(var_names %in% test) + "startdate" %in% test) * 1 - "value" %in% test # check if test is startdate variable and does not have 'value' in its name
+        check_qol = (any(var_names %in% test) + "qol" %in% test) * 1 - "value" %in% test # check if test is qol variable for other_ae and does not have value in the name
+        #ADR_COVID19_SmPC_reaction_COVIDsmpc_LLT_CODES_ID
+        #check_llt = "llt" %in% test + "covidsmpc" %in% test
+    
+        
+        new_check = "new" %in% test # check if 'new' is in test
+        if("llt" %in% test + "covidsmpc" %in% test == 2){
+          ae_matrix_llt[q_num] = 1
+          if(new_check == 1){
+            ae_matrix_llt[q_num] = 2
+          }
+        }
+        if(sum(sus_vaccine %in% split_names[[i]]) == 6){
+          #print(q_num)
+          ae_matrix_vaccine[q_num,1] = 1
+        }
+        #Suspect_COVID_Vaccin_Vac_Date2_Date
+        #ae_matrix_vaccine[q_num,i] = 
+        if(check == 2){ # see check holds
+          ##print(check)
+          ind = which(var_names %in% test) # select which number ae 
+          if(new_check == 0){
+            ae_matrix_end[q_num, ind] = 1 # set ae_matrix to 1 for q_num and ind
+          }
+          if(new_check == 1){
+            ae_matrix_new_end[q_num, ind] = 2 # set ae_matrix to 2 for q_num and ind
+          }
+          
+        }
+        
+        if(check2 == 2){ # see check holds
+          ##print(check)
+          ind = which(var_names %in% test) # select which number ae 
+          if(new_check == 0){
+            ae_matrix_startdate[q_num, ind] = 1 # set ae_matrix to 1 for q_num and ind
+          }
+          if(new_check == 1){
+            ae_matrix_startdate[q_num, ind] = 2 # set ae_matrix to 2 for q_num and ind
+          }
+          
+                # same as above but qol matrix
+        if(check_qol == 1){
+          ind = which(var_names %in% test)
+          if(new_check == 0){
+            ae_matrix_qol[q_num, ind] = 1
+          }
+          if(new_check == 1){
+            ae_matrix_qol[q_num, ind] = 2
+          }
+        }
+          #ae_matrix_llt
+                        # same as above but qol matrix
+  
+          
+        }
+      }
+  }
+  odbcClose(db)
+  remove(db)
+  #q3_1.Suspect_COVID_Vaccin_Vac_Date2_Date
+  test = split_names[[4]]
+  #second part query
+  second_part_sd <- function(q_num, var_name, start, enddate_index, qol_index){
+    location = paste(",'", var_name, "' AS 'location'", sep = '')
+    enddate = c(",CASE") # setup enddate and endate location variables
+    enddate_loc = c(",CASE")
+    
+    # setup the enddate and endate loc case when statements
+    for(i in q_num:6){
+      if(enddate_index[i] != 0){
+        if(q_num == i & enddate_index[i] != 1){ # if set the first enddate s new_enddate if q_num is higher than 1
+          enddate = c(enddate, paste("  WHEN q", i, "_1.ADR_enddate_", var_name, "_New_ADR_enddate IS NOT NULL THEN q", i, "_1.ADR_enddate_", var_name, "_New_ADR_enddate", sep = ""))
+          enddate_loc = c(enddate_loc, paste("  WHEN q", i, "_1.ADR_enddate_", var_name, "_New_ADR_enddate IS NOT NULL THEN ", i, sep = ""))
+          
+        } 
+        else if(enddate_index[i] != 2){
+          enddate = c(enddate, paste("  WHEN q", i, "_1.ADR_enddate_", var_name, "_ADR_enddate IS NOT NULL THEN q", i, "_1.ADR_enddate_", var_name, "_ADR_enddate", sep = ""))
+          enddate_loc = c(enddate_loc, paste("  WHEN q", i, "_1.ADR_enddate_", var_name, "_ADR_enddate IS NOT NULL THEN ", i, sep = ""))
+        }
+      }
+    }
+    #qol = paste(",q", q_num, "_1.QOL_Cons_", var_name, "_QOL_VALUE as QoL", sep = "")
+    qol = character(6)
+    outcome = character(6)
+    #outcome = paste(",q", q_num, "_1.ADR_COVID19_", var_name, "_ADR_outcome outcome", sep = "")
+    for(i in 1:6){
+      if(qol_index[i] != 0){
+        if(qol_index[i] == 2){
+          qol[i] = paste(",q", i, "_1.QOL_Cons_", var_name, "_New_QOL_VALUE as qol_", i, sep = "")
+          outcome[i] = paste(",q", i, "_1.ADR_COVID19_", var_name, "_New_ADR_outcome outcome_", i, sep = "")
+        } else {
+          qol[i] = paste(",q", i, "_1.QOL_Cons_", var_name, "_QOL_VALUE as qol_", i, sep = "")
+          outcome[i] = paste(",q", i, "_1.ADR_COVID19_", var_name, "_ADR_outcome outcome_", i, sep = "")
+        }
+      } else{
+        qol[i] = paste(",NULL AS qol_", i, sep = "")
+        outcome[i] = paste(",NULL AS outcome_", i, sep = "")
+      }
+    }
+    
+    
+    enddate = c(enddate, "  END AS enddate")
+    enddate_loc = c(enddate_loc, " ELSE 0",  " END AS enddate_loc")
+    #set cioms and startdate as new if q_num = 1 
+    if(q_num == 1){
+      
+      #cioms = paste(",CASE WHEN q", q_num, "_1.ADR_COVID19_", var_name, "_CIOMS_HCP_cons_VALUE = '6' THEN 1 ELSE 0 END AS serious", sep = "")
+      cioms = paste(",q", q_num, "_1.ADR_COVID19_", var_name, "_CIOMS_hcp_cons_value as 'hcp_cons'", sep = "")
+    }
+    
+    if(start == 1){
+      start_date = paste(",q", start, "_1.ADR_COVID19_", var_name, "_startdate_reaction AS startdate", sep = "")
+    }
+    if(start > 1){
+      start_date = paste(",q", start, "_1.ADR_COVID19_", var_name, "_New_startdate_reaction AS startdate", sep = "")
+    }
+    
+    
+    if(q_num > 1){
+      #cioms = paste(",CASE WHEN q", q_num, "_1.ADR_COVID19_", var_name, "_New_CIOMS_HCP_cons_VALUE = '6' THEN 1 ELSE 0 END AS serious", sep = "")
+      cioms = paste(",q", q_num, "_1.ADR_COVID19_", var_name, "_New_CIOMS_hcp_cons_value as 'hcp_cons'", sep = "")
+    }
+    # setup outcome and qol variables
+    
+    # add all the snipits together
+    second_part = c(location,
+                    start_date,
+                    enddate,
+                    enddate_loc,
+                    cioms,
+                    qol,
+                    outcome
+                    )
+      return(second_part)
+  }
+  
+  # third part query 
+  third_part_query_sd <- function(q_num, var_name, start, llt_index){
+    pt_name = var_to_pt(var_name) # Translate var to pt name
+    # set up some joins
+    third_part1 = character(5)
+    third_part1[1] = "FROM StudyParticipations_Covid study"
+    third_part1[2] = "LEFT JOIN Baseline b ON b.StudyParticipationID = study.StudyParticipationID"
+    third_part1[3] = "LEFT JOIN Baseline_1 b_1 ON b_1.ID = b.ID"
+    third_part1[4] = "LEFT JOIN [Toestemmingsverklaring onderzoek coronavaccin NIEUW] t ON t.StudyParticipationID = study.StudyParticipationID"
+    third_part1[5] = "LEFT JOIN [Toestemmingsverklaring onderzoek coronavaccin NIEUW_1] t_1 On t_1.ID = t.ID"
+    # set up the joins for enddate
+    q_joins = c()
+    for(i in 1:6){
+      q_joins = c(q_joins, paste("LEFT JOIN [Vragenlijst ", i, " onderzoek coronavaccin] q", i, " ON study.StudyParticipationID = q", i, ".StudyParticipationID", sep = ""))
+      q_joins = c(q_joins, paste("LEFT JOIN [Vragenlijst ", i, " onderzoek coronavaccin_1] q", i, "_1 ON q", i, ".ID = q", i, "_1.ID", sep = ""))
+    }
+    
+    #set llt joins as new if q_num == 1
+    third_part2 = character(3)
+  
+    if(ae_matrix_llt[q_num] == 1){
+      third_part2[1] = paste("LEFT JOIN LLT_CODES llt on q", q_num, "_1.ADR_COVID19_SmPC_reaction_COVIDsmpc_LLT_CODES_ID = llt.ID", sep = "")
+    }
+    if(ae_matrix_llt[q_num] == 2){
+      third_part2[1] = paste("LEFT JOIN LLT_CODES llt on q", q_num, "_1.ADR_COVID19_SmPC_New_reaction_COVIDsmpc__LLT_CODES_ID = llt.ID", sep = "")
+    }
+    #set meddra join and where statement
+    third_part2[2] = paste("LEFT JOIN Lareb_Standards_Meddra.dbo.MeddraHierarchyLines med ON llt.LLTCode = med.LLTCode", sep = "")
+    third_part2[3] = paste("WHERE med.PTName = '", pt_name, "' AND med.IsDefaultSOC = 1 AND q", q_num, ".Coded = '1'", sep = "") 
+    #add snipits together
+    third_part = c(third_part1, q_joins, third_part2)
+    return(third_part)
+  }
+  
+  single_query_sd <- function(num, name, start, enddate_index, qol_index, vaccine_index){
+    # set up single side effect query by adding all output from the above functions together
+    first = first_part(num, vaccine_index)
+    second = second_part_sd(num, name, start, enddate_index, qol_index)
+    third = third_part_query_sd(num, name, start)
+    query = c(first, " ", second, " ", third, " ")
+    return(query)
+  }
+  
+  side_effects_function <- function(){
+    var_names = c("headache", "notfeelingwell", "myalgia","fatigue", "shiver", "jointpain", "nausea")
+    l_var_names = length(var_names)
+    ae_matrix_new_end = matrix(0, nrow = 6, ncol = l_var_names) # enddate index matrix, equal to 1 if present, 2 if present and enddate is new, 0 else. rows represent the questionnaire and columns represent the ae variables. 
+    ae_matrix_end = matrix(0, nrow = 6, ncol = l_var_names) # enddate index matrix, equal to 1 if present, 2 if present and enddate is new, 0 else. rows represent the questionnaire and columns represent the ae variables. 
+    ae_matrix_startdate = matrix(0, nrow = 6, ncol = l_var_names)
+    ae_matrix_qol = matrix(0, nrow = 6, ncol = l_var_names)
+    ae_matrix_vaccine = matrix(0, nrow = 6, ncol = l_var_names)
+    ae_matrix_llt = numeric(6)
+    
+    
+    
+    sus_vaccine = str_split("suspect_covid_vaccin_vac_date2_date", pattern = "_")[[1]]
+    
+    db <- odbcDriverConnect(DB_string)
+    for(q_num in 1:6){ # check what enddate, startdate and qol variables there are based on variables in questionnaire 1 - 6
+        query = paste("SELECT *",
+                      paste("FROM [Vragenlijst ", q_num, " onderzoek coronavaccin_1]", sep = ""),
+                      sep = "") # setup query that returns all variables from questionnaire q_num
+       
+        df_adr <- sqlQuery(db, query, rows_at_time = 1) # query q_num
+        
+        var_names_db = tolower(colnames(df_adr)) # get colnames and set capital letters to lower
+        split_names = strsplit(var_names_db, split = "_") # split the names of the variables on "_"
+        for(i in 1:length(var_names_db)){ # loop through the variables and see whether they are an index for enddate, startdate or qol index matrices
+          test = split_names[[i]] # select split var name
+          check = (any(var_names %in% test) + "enddate" %in% test) * 1 - "value" %in% test # check if test is enddate variable for otherae and does not have 'value' in its name.
+          check2 = (any(var_names %in% test) + "startdate" %in% test) * 1 - "value" %in% test # check if test is startdate variable and does not have 'value' in its name
+          check_qol = (any(var_names %in% test) + "qol" %in% test) * 1 - "value" %in% test # check if test is qol variable for other_ae and does not have value in the name
+          #ADR_COVID19_SmPC_reaction_COVIDsmpc_LLT_CODES_ID
+          #check_llt = "llt" %in% test + "covidsmpc" %in% test
+      
+          
+          new_check = "new" %in% test # check if 'new' is in test
+          if("llt" %in% test + "covidsmpc" %in% test == 2){
+            ae_matrix_llt[q_num] = 1
+            if(new_check == 1){
+              ae_matrix_llt[q_num] = 2
+            }
+          }
+          if(sum(sus_vaccine %in% split_names[[i]]) == 6){
+            ##print(q_num)
+            ae_matrix_vaccine[q_num,1] = 1
+          }
+          #Suspect_COVID_Vaccin_Vac_Date2_Date
+          #ae_matrix_vaccine[q_num,i] = 
+          if(check == 2){ # see check holds
+            ##print(check)
+            ind = which(var_names %in% test) # select which number ae 
+            if(new_check == 0){
+              ae_matrix_end[q_num, ind] = 1 # set ae_matrix to 1 for q_num and ind
+            }
+            if(new_check == 1){
+              ae_matrix_new_end[q_num, ind] = 2 # set ae_matrix to 2 for q_num and ind
+            }
+            
+          }
+          
+          if(check2 == 2){ # see check holds
+            ##print(check)
+            ind = which(var_names %in% test) # select which number ae 
+            if(new_check == 0){
+              ae_matrix_startdate[q_num, ind] = 1 # set ae_matrix to 1 for q_num and ind
+            }
+            if(new_check == 1){
+              ae_matrix_startdate[q_num, ind] = 2 # set ae_matrix to 2 for q_num and ind
+            }
+            
+                  # same as above but qol matrix
+          if(check_qol == 1){
+            ind = which(var_names %in% test)
+            if(new_check == 0){
+              ae_matrix_qol[q_num, ind] = 1
+            }
+            if(new_check == 1){
+              ae_matrix_qol[q_num, ind] = 2
+            }
+          }
+            #ae_matrix_llt
+                          # same as above but qol matrix
+    
+            
+          }
+        }
+    }
+    vaccine_index1 = rowSums(ae_matrix_vaccine)
+  
+    odbcClose(db)
+    remove(db)
+    db <- odbcDriverConnect(DB_string) # open database
+    var_names = c("headache", "notfeelingwell", "myalgia","fatigue", "shiver", "jointpain", "nausea")
+    queries = c("SET NOCOUNT ON") # setup all queries for side effects
+    for(j in 1:length(var_names)){
+      
+      for(k in 1:6){
+        if(ae_matrix_startdate[k,j] != 0){
+          queries = c(queries, single_query_sd(k, var_names[j], k, (ae_matrix_end + ae_matrix_new_end)[,j], ae_matrix_qol[,j], vaccine_index1), "UNION")
+        }
+      }
+    }
+    queries = queries[-length(queries)] # remove UNION at the end of the full query
+    q_collapse = paste(queries, collapse = "\n") # collapse the queries vector to a single string
+    df_final = sqlQuery(db, q_collapse, rows_at_time = 1) # query out of sql
+    # close and remove data base
+    odbcClose(db)
+    remove(db)
+    return(list(df_final, queries)) # return the data.frame of the query and the query vector
+  }
+  #test = side_effects_function()
+  
+  
+  
+  llt_dictionary <- function(type, q_num){
+    # function  tranlates the slight differences per type of pt name to corresponding lltname
+    types = c("fever", "injectionsiter", "injectionsitel",  "extensiveswelling_injectionsiter", "extensiveswelling_injectionsitel")
+    if(q_num == 1){
+      llts = c("ADR_COVID19_fever_Reaction_vaccin_fever_LLT_CODES_ID", 
+               "ADR_COVID19_injectionsitel_reaction_vaccin_injectionsite_LLT_CODES_ID", 
+               "ADR_COVID19_injectionsiter_reaction_vaccin_injectionsite_LLT_CODES_ID", 
+               "extensiveswelling_injectionsiter_reaction_vaccin_extensivelimbswelling_LLT_CODES_ID",
+               "extensiveswelling_injectionsitel_reaction_vaccin_extensivelimbswelling_LLT_CODES_ID")
+      
+    } else llts = c("ADR_COVID19_fever_New_Reaction_vaccin_fever_LLT_CODES_ID",
+                    "ADR_COVID19_injectionsitel_New_reaction_vaccin_injectionsite_LLT_CODES_ID",
+                    "ADR_COVID19_injectionsiter_New_reaction_vaccin_injectionsite_LLT_CODES_ID",
+                    "extensiveswelling_injectionsiter_New_reaction_vaccin_extensivelimbswelling_LLT_CODES_ID",
+                    "extensiveswelling_injectionsitel_New_reaction_vaccin_extensivelimbswelling_LLT_CODES_ID")
+    ind = which(types == type)
+    return(llts[ind])
+  }
+  
+  
+  
+  
+  second_part_other_llt <- function(q_num, q_num_start, new, type, enddate_index, qol_index, injectionsite_ind){
+    type3 = type2 = type
+    # change type if extensiveswelling is used
+    if(type == "extensiveswelling_injectionsiter"){
+      type = type3 = "injectionsiter"
+    }
+    if(type == "extensiveswelling_injectionsitel"){
+      type = type3 = "injectionsitel"
+    }
+  
+    if(new == "yes"){ # set type to _new if new = yes
+      type = paste(type, "_new", sep = "")
+    }
+    location = paste(",'", type, "' AS 'location'", sep = '')
+    if(q_num == 1){
+        one = paste(",q", q_num, "_1.ADR_COVID19_", type, "_Startdate_reaction AS startdate", sep = "") # setup startdate
+    } else {
+        one = paste(",q", q_num, "_1.ADR_COVID19_", type, "_New_Startdate_reaction AS startdate", sep = "") # setup startdate
+  
+    }
+    two = ",CASE"
+    #setup enddate and enddate loc variables
+    enddate = c()
+    enddate_loc = c()
+    
+  
+    
+    #injectionsite_ind
+    type_end = type3
+    
+    for(i in q_num:6){
+      if(enddate_index[i] != 0){
+        #if((q_num == i & enddate_index[i] != 1) | (q_num == i & enddate_index[i] > 1)){ # if set the first enddate s new_enddate if q_num is higher than 1
+        if((q_num == i & enddate_index[i] != 1)){ # if set the first enddate s new_enddate if q_num is higher than 1
+          if(type3 == "injectionsiter"){
+            type_end = injectionsite_ind[i,2]
+          }
+          enddate = c(enddate, paste("  WHEN q", i, "_1.ADR_enddate_",  type_end, "_New_ADR_enddate IS NOT NULL THEN q", i, "_1.ADR_enddate_",  type_end, "_New_ADR_enddate", sep = ""))
+          enddate_loc = c(enddate_loc, paste("  WHEN q", i, "_1.ADR_enddate_",  type_end, "_New_ADR_enddate IS NOT NULL THEN ", i, sep = ""))
+          
+        } 
+        else if(enddate_index[i] != 2){
+          if(type3 == "injectionsiter"){
+            type_end = injectionsite_ind[i,1]
+          }
+  
+          enddate = c(enddate, paste("  WHEN q", i, "_1.ADR_enddate_", type_end, "_ADR_enddate IS NOT NULL THEN q", i, "_1.ADR_enddate_", type_end, "_ADR_enddate",  sep = ""))
+          enddate_loc = c(enddate_loc, paste("  WHEN q", i, "_1.ADR_enddate_", type_end, "_ADR_enddate IS NOT NULL THEN ", i, sep = ""))
+        }
+      }
+    }
+    
+    enddate = c(enddate, "  END AS enddate")
+    enddate_loc = c(enddate_loc, "ELSE 0", "END AS enddate_loc")
+  
+    #third = paste(",CASE WHEN q", q_num_start, "_1.ADR_COVID19_", type, "_CIOMS_HCP_cons_VALUE = 6 THEN 1 ELSE 0 END AS serious", sep = "") # set up cioms var
+    third = paste(",q", q_num, "_1.ADR_COVID19_", type, "_CIOMS_hcp_cons_value as 'hcp_cons'", sep = "") # set up cioms var
+    if(q_num == 1){
+      third = paste(",q", q_num, "_1.ADR_COVID19_", type, "_CIOMS_hcp_cons_value as 'hcp_cons'", sep = "") # set up cioms var
+    } else {
+      third = paste(",q", q_num, "_1.ADR_COVID19_", type, "_New_CIOMS_hcp_cons_value as 'hcp_cons'", sep = "") # set up cioms var
+      
+    }
+    #fourth = paste(",q", q_num_start, "_1.ADR_COVID19_", type, "_ADR_outcome outcome", sep = "")# # set up outcome var
+    #qol = paste(",q", q_num_start, "_1.QOL_Cons_", type, "_QOL_VALUE QoL", sep = "") # set up qol var
+    
+    qol = character(6)
+    outcome = character(6)
+    #outcome = paste(",q", q_num, "_1.ADR_COVID19_", var_name, "_ADR_outcome outcome", sep = "")
+    for(i in 1:6){
+      if(i %in% q_num:6){
+        if(q_num > 1 & q_num == i){ #  QOL_Cons_fever_New_QOL
+          qol[i] = paste(",q", i, "_1.QOL_Cons_", type3, "_New_QOL_VALUE as qol_", i, sep = "")
+          outcome[i] = paste(",q", i, "_1.ADR_COVID19_", type3, "_New_ADR_outcome outcome_", i, sep = "")
+        } else {
+          qol[i] = paste(",q",i, "_1.QOL_Cons_", type3, "_QOL_VALUE as qol_", i, sep = "")
+          outcome[i] = paste(",q", i, "_1.ADR_COVID19_", type3, "_ADR_outcome outcome_", i, sep = "")
+        }
+      } else{
+        qol[i] = paste(",NULL AS qol_", i, sep = "")
+        outcome[i] = paste(",NULL AS outcome_", i, sep = "")
+      }
+    }
+    
+    qol = character(6)
+    outcome = character(6)
+    #outcome = paste(",q", q_num, "_1.ADR_COVID19_", var_name, "_ADR_outcome outcome", sep = "")
+    for(i in 1:6){
+      if(qol_index[i] != 0){
+        if(qol_index[i] == 2){
+          qol[i] = paste(",q", i, "_1.QOL_Cons_", type3, "_New_QOL_VALUE as qol_", i, sep = "")
+          outcome[i] = paste(",q", i, "_1.ADR_COVID19_", type3, "_New_ADR_outcome outcome_", i, sep = "")
+        } else {
+          qol[i] = paste(",q", i, "_1.QOL_Cons_", type3, "_QOL_VALUE as qol_", i, sep = "")
+          outcome[i] = paste(",q", i, "_1.ADR_COVID19_", type3, "_ADR_outcome outcome_", i, sep = "")
+        }
+      } else{
+        qol[i] = paste(",NULL AS qol_", i, sep = "")
+        outcome[i] = paste(",NULL AS outcome_", i, sep = "")
+      }
+    }
+    
+    # setup joins
+    five = "FROM StudyParticipations_Covid study"
+    six = "LEFT JOIN Baseline b ON b.StudyParticipationID = study.StudyParticipationID"
+    seven = "LEFT JOIN Baseline_1 b_1 ON b_1.ID = b.ID"
+    t = "LEFT JOIN [Toestemmingsverklaring onderzoek coronavaccin NIEUW] t ON t.StudyParticipationID = study.StudyParticipationID"
+    t_1 = "LEFT JOIN [Toestemmingsverklaring onderzoek coronavaccin NIEUW_1] t_1 On t_1.ID = t.ID"
+    q_joins = c()
+    for(i in 1:6){
+      q_joins = c(q_joins, paste("LEFT JOIN [Vragenlijst ", i, " onderzoek coronavaccin] q", i, " ON study.StudyParticipationID = q", i, ".StudyParticipationID", sep = ""))
+      q_joins = c(q_joins, paste("LEFT JOIN [Vragenlijst ", i, " onderzoek coronavaccin_1] q", i, "_1 ON q", i, ".ID = q", i, "_1.ID", sep = ""))
+    }
+    eight = paste("LEFT JOIN LLT_CODES llt ON q", q_num, "_1.", llt_dictionary(type2, q_num), " = llt.ID", sep = "")
+    nine = "LEFT JOIN Lareb_Standards_Meddra.dbo.MeddraHierarchyLines med ON llt.LLTCode = med.LLTCode"
+    ten = paste("WHERE med.IsDefaultSOC = 1 AND q", q_num, ".Coded = '1'", sep = "")
+    
+    #add snipits together
+    full = c(location,
+             one, 
+             two, 
+             enddate,
+             two,
+             enddate_loc,
+             third,
+             qol,
+             #fourth,
+             outcome,
+             five,
+             six,
+             seven,
+             t,
+             t_1,
+             q_joins,
+             eight,
+             nine,
+             ten)
+    return(full)
+  }
+  
+  full_query_other_llts <- function(q_num, q_num_start, new, type, enddate_ind, qol_ind, vaccine_index1, injectionsite_ind){
+    #add all query parts together
+    first = first_part(q_num = q_num, vaccine_index1)
+    second = second_part_other_llt(q_num = q_num, 
+                                   q_num_start = q_num_start, 
+                                   new = new,
+                                   type = type,
+                                   enddate_index = enddate_ind,
+                                   qol_index = qol_ind,
+                                   injectionsite_ind = injectionsite_ind)
+    return(c(first,second))
+  }
+  
+  
+  #ae_matrix_llt 
+  
+  
+  other_llt_function <- function(){
+    types = c("fever", "injectionsiter", "injectionsitel", "extensiveswelling_injectionsiter", "extensiveswelling_injectionsitel")
+    types_end = c("fever", "injectionsite", "injectionsitel", "extensiveswelling_injectionsiter", "extensiveswelling_injectionsitel")
+    
+    l_var_names = length(types)
+    sus_vaccine = str_split("suspect_covid_vaccin_vac_date2_date", pattern = "_")[[1]]
+    
+    ae_matrix_new_end = matrix(0, nrow = 6, ncol = l_var_names) # enddate index matrix, equal to 1 if present, 2 if present and enddate is new, 0 else. rows represent the questionnaire and columns represent the ae variables. 
+    ae_matrix_end = matrix(0, nrow = 6, ncol = l_var_names) # enddate index matrix, equal to 1 if present, 2 if present and enddate is new, 0 else. rows represent the questionnaire and columns represent the ae variables. 
+    ae_matrix_startdate = matrix(0, nrow = 6, ncol = l_var_names)
+    ae_matrix_qol = matrix(0, nrow = 6, ncol = l_var_names)
+    ae_matrix_vaccine = matrix(0, nrow = 6, ncol = l_var_names)
+    ae_matrix_llt = matrix(0, nrow = 6, ncol = l_var_names)
+    injectionsite_ = matrix(NA, nrow = 6, ncol = 2)
+    var_names = types
+    db <- odbcDriverConnect(DB_string)
+    
+    llts = c("ADR_COVID19_fever_Reaction_vaccin_fever_LLT_CODES_ID", 
+                 "ADR_COVID19_injectionsitel_reaction_vaccin_injectionsite_LLT_CODES_ID", 
+                 "ADR_COVID19_injectionsiter_reaction_vaccin_injectionsite_LLT_CODES_ID", 
+                 "extensiveswelling_injectionsiter_reaction_vaccin_extensivelimbswelling_LLT_CODES_ID",
+                 "extensiveswelling_injectionsitel_reaction_vaccin_extensivelimbswelling_LLT_CODES_ID")
+    for(q_num in 1:6){ # check what enddate, startdate and qol variables there are based on variables in questionnaire 1 - 6
+        query = paste("SELECT *",
+                      paste("FROM [Vragenlijst ", q_num, " onderzoek coronavaccin_1]", sep = ""),
+                      sep = "") # setup query that returns all variables from questionnaire q_num
+       
+        df_adr <- sqlQuery(db, query, rows_at_time = 1) # query q_num
+        ##print(q_num)
+        var_names_db = tolower(colnames(df_adr)) # get colnames and set capital letters to lower
+        split_names = strsplit(var_names_db, split = "_") # split the names of the variables on "_"
+        for(i in 1:length(var_names_db)){ # loop through the variables and see whether they are an index for enddate, startdate or qol index matrices
+          test = split_names[[i]] # select split var name
+          ##print(i)
+         
+          check = (any(types_end %in% test) + "enddate" %in% test) * 1 - "value" %in% test # check if test is enddate variable for otherae and does not have 'value' in its name.
+          
+          check2 = (any(var_names %in% test) + "startdate" %in% test) * 1 - "value" %in% test # check if test is startdate variable and does not have 'value' in its name
+          check_qol = (any(var_names %in% test) + "qol" %in% test) * 1 - "value" %in% test # check if test is qol variable for other_ae and does not have value in the name
+          #ADR_COVID19_SmPC_reaction_COVIDsmpc_LLT_CODES_ID
+          #check_llt = "llt" %in% test + "covidsmpc" %in% test
+      
+          
+          new_check = "new" %in% test # check if 'new' is in test
+          # if("llt" %in% test + "covidsmpc" %in% test == 2){
+          #   ae_matrix_llt[q_num] = 1
+          #   if(new_check == 1){
+          #     ae_matrix_llt[q_num] = 2
+          #   }
+          # }
+          for(v in 1:l_var_names){
+            if(tolower(llt_dictionary(var_names[v], q_num)) == var_names_db[i]){
+              if(new_check == T){
+                ae_matrix_llt[q_num,v] = 1
+              }
+              if(new_check == F){
+                ae_matrix_llt[q_num,v] = 2
+              }
+              
+            }
+          }
+            
+          check_inj1 = (("injectionsite" %in% test) + "enddate" %in% test) * 1 - "value" %in% test
+          check_inj2 = (("injectionsiter" %in% test) + "enddate" %in% test) * 1 - "value" %in% test
+          
+          if(check_inj1 == 2){
+            if(new_check == F){
+              injectionsite_[q_num,1] = "injectionsite"
+            }
+            if(new_check == T){
+              injectionsite_[q_num,2] = "injectionsite"
+            }
+          }
+          if(check_inj2 == 2){
+            if(new_check == F){
+              injectionsite_[q_num,1] = "injectionsiter"
+            }
+            if(new_check == T){
+              injectionsite_[q_num,2] = "injectionsiter"
+            }
+          }
+    
+            
+          if(sum(sus_vaccine %in% split_names[[i]]) == 6){
+            ##print(q_num)
+            ae_matrix_vaccine[q_num,1] = 1
+          }
+          #Suspect_COVID_Vaccin_Vac_Date2_Date
+          #ae_matrix_vaccine[q_num,i] = 
+          check_end1 = (any(types_end %in% test) + "enddate" %in% test) * 1 - "value" %in% test # check if test is enddate variable for otherae and does not have 'value' in its name.
+          check_end2 = (any(types %in% test) + "enddate" %in% test) * 1 - "value" %in% test # check if test is enddate variable for otherae and does not have 'value' in its name.
+          if(check_end1 == 2 | check_end2 == 2){ # see check holds
+            ##print(check)
+            if(check_end1 == 2){
+              ind = which(types_end %in% test) # select which number ae
+            } else {
+              ind = which(types %in% test)
+            }
+            if(new_check == 0){
+              ae_matrix_end[q_num, ind] = 1 # set ae_matrix to 1 for q_num and ind
+            }
+            if(new_check == 1){
+              ae_matrix_new_end[q_num, ind] = 2 # set ae_matrix to 2 for q_num and ind
+            }
+            
+          }
+          
+          if(check2 == 2){ # see check holds
+            ##print(check)
+            ind = which(var_names %in% test) # select which number ae 
+            if(new_check == 0){
+              ae_matrix_startdate[q_num, ind] = 1 # set ae_matrix to 1 for q_num and ind
+            }
+            if(new_check == 1){
+              ae_matrix_startdate[q_num, ind] = 2 # set ae_matrix to 2 for q_num and ind
+            }
+            
+                  # same as above but qol matrix
+          if(check_qol == 1){
+            ind = which(var_names %in% test)
+            if(new_check == 0){
+              ae_matrix_qol[q_num, ind] = 1
+            }
+            if(new_check == 1){
+              ae_matrix_qol[q_num, ind] = 2
+            }
+          }
+            #ae_matrix_llt
+                          # same as above but qol matrix
+            
+    
+            
+          }
+        }
+    }
+    odbcClose(db)
+    remove(db)
+    vaccine_index1 = rowSums(ae_matrix_vaccine)
+    ae_matrix_startdate[,c(4,5)] = ae_matrix_startdate[,c(2,3)]
+    ae_matrix_end[,c(4,5)] = ae_matrix_end[,c(2,3)]
+    ae_matrix_new_end[,c(4,5)] = ae_matrix_new_end[,c(2,3)]
+    ae_matrix_new_end[,c(4,5)] = ae_matrix_new_end[,c(2,3)]
+    ae_matrix_qol[,c(4,5)] = ae_matrix_qol[,c(2,3)]
+    types = c("fever", "injectionsiter", "injectionsitel",  "extensiveswelling_injectionsiter", "extensiveswelling_injectionsitel")
+    queries = NULL
+    
+    for(j in 1:length(types)){
+      for(k in 1:6){
+        if(k > 1){
+          new = "yes"
+        } 
+        if(k == 1){
+          new = "no"
+        }
+        if(ae_matrix_startdate[k,j] != 0 & ae_matrix_llt[k,j] != 0){
+          queries = c(queries, full_query_other_llts(k, k, k, types[j], (ae_matrix_end + ae_matrix_new_end)[,j], ae_matrix_qol[,j], vaccine_index1, injectionsite_), "UNION")
+    
+        }
+      }
+    }
+    queries = queries[-length(queries)] # remove UNION from last element
+    
+    q_collapse = paste(c("SET NOCOUNT ON", queries), collapse = "\n") # set query vector to single string
+    db <- odbcDriverConnect(DB_string)
+    df_other_llts <- sqlQuery(db, q_collapse, rows_at_time = 1)
+    odbcClose(db)
+    remove(db)
+    
+    return(list(df_other_llts, queries))
+  }
+  
+  #test = get_data_other_ltts()
+  second_part_function <- function(q_num, var, index_enddate, index_startdate, index_qol){
+    # second part function for the other_ae variables
+    #ae_loc = paste("otherae_", var, " AS ae_loc",sep = "") # set up location for the 
+    location = paste(",'ae_", var, "' AS 'location'", sep = '')
+    startdate_ind = which(index_startdate > 0) # check in which questionnaire an other_ae starts
+    if(sum(index_startdate) == 2){ # if index startdate == 2 set _startdate to _new_startdate
+      startdate = paste(",q", startdate_ind, "_1.OtherAE_", var, "_New_startdate_reaction AS startdate", sep = "")
+    } else startdate = paste(",q", startdate_ind, "_1.OtherAE_", var, "_startdate_reaction AS startdate", sep = "")
+    # setup enddate and endate loc variables
+    enddate = c(",CASE")
+    enddate_loc = c(",CASE")
+    for(i in 1:6){
+      if(index_enddate[i] == 1){
+        enddate = c(enddate, paste("  WHEN q", i, "_1.OtherAe_", var, "_ADR_enddate_ADR_enddate IS NOT NULL THEN q", i, "_1.OtherAe_", var, "_ADR_enddate_ADR_enddate", sep = ""))
+        enddate_loc = c(enddate_loc, paste("  WHEN q", i, "_1.OtherAe_", var, "_ADR_enddate_ADR_enddate IS NOT NULL THEN ", i, sep = ""))
+      }
+      if(index_enddate[i] == 2){
+        enddate = c(enddate, paste("  WHEN q", i, "_1.OtherAe_", var, "_ADR_enddate_New_ADR_enddate IS NOT NULL THEN q", i, "_1.OtherAe_", var, "_ADR_enddate_New_ADR_enddate", sep = ""))
+        enddate_loc = c(enddate_loc, paste("  WHEN q", i, "_1.OtherAe_", var, "_ADR_enddate_New_ADR_enddate IS NOT NULL THEN ", i, sep = ""))
+      }
+    }
+    enddate = c(enddate, "  END AS enddate")
+    enddate_loc = c(enddate_loc, "  END AS enddate_loc")
+    
+    if(sum(index_startdate) == 2){ # set cioms to new if startdate is new.
+      #cioms = paste(",CASE WHEN q", startdate_ind, "_1.OtherAE_", var, "_New_CIOMS_HCP_cons_VALUE = '6' THEN 1 ELSE 0 END AS serious", sep = "")
+      cioms = paste(",q", startdate_ind, "_1.OtherAE_", var, "_New_CIOMS_hcp_cons_value as 'hcp_cons'", sep = "")
+    } else {#cioms = paste(",CASE WHEN q", startdate_ind, "_1.OtherAE_", var, "_CIOMS_HCP_cons_VALUE = '6' THEN 1 ELSE 0 END AS serious", sep = "")
+      cioms = paste(",q", startdate_ind, "_1.OtherAE_", var, "_CIOMS_hcp_cons_value as 'hcp_cons'", sep = "")
+    }
+  
+    # if(index_qol[q_num] == 2){ # set qol and outcome to new if qol index == 2 else 1
+    #   qol = paste(",q", q_num, "_1.OtherAE_", var, "_QOL_Cons_new_QOL_value as QoL", sep = "")
+    #   outcome = paste(",q", q_num, "_1.OtherAE_", var, "_new_ADR_outcome outcome", sep = "")
+    # } 
+    # if(index_qol[q_num] == 1) {
+    #   qol = paste(",q", q_num, "_1.OtherAE_", var, "_QOL_Cons_QOL_value as QoL", sep = "")
+    #   outcome = paste(",q", q_num, "_1.OtherAE_", var, "_ADR_outcome outcome", sep = "")     
+    # }
+    
+    qol = character(6)
+    outcome = character(6)
+    #outcome = paste(",q", q_num, "_1.ADR_COVID19_", var_name, "_ADR_outcome outcome", sep = "")
+    for(i in 1:6){
+      if(i %in% q_num:6 & index_qol[i] != 0){
+        if(index_qol[q_num] == 2 & i == q_num){
+          qol[i] = paste(",q", i, "_1.OtherAE_", var, "_QOL_Cons_new_QOL_value as qol_", i, sep = "")
+          outcome[i] = paste(",q", i, "_1.OtherAE_", var, "_New_ADR_outcome outcome_", i, sep = "")
+        } else {
+          qol[i] = paste(",q", i, "_1.OtherAE_", var, "_QOL_Cons_QOL_value as qol_", i, sep = "")
+          outcome[i] = paste(",q", i, "_1.OtherAE_", var, "_ADR_outcome outcome_", i, sep = "")
+        }
+      } else{
+        qol[i] = paste(",NULL AS qol_", i, sep = "")
+        outcome[i] = paste(",NULL AS outcome_", i, sep = "")
+      }
+    }
+    
+    
+    
+    
+    if(sum(index_enddate)==0){ # if there is no enddate for other_ae, set enddate to NULL and enddate_loc to 0
+      enddate = c(",NULL AS enddate")
+      enddate_loc= c(",0 AS enddate_loc")
+    }
+    # add snipits together
+    second_part = c(location,
+                    startdate,
+                    enddate,
+                    enddate_loc,
+                    cioms,
+                    qol,
+                    outcome
+    )
+    return(second_part)
+  }
+  
+  
+  third_part_function <- function(q_num, var_name, index, index_u, start_date, qol){
+    # start_date = strsplit(start_date, split ="")[[1]]
+    # start_date_l = length(start_date)
+    # setup enddate indices
+    ind = which(index > 0) # check for which enddates there are variables in questionnaire q_num
+    ind_2 = which(index == 2) # check which enddate is 'new'
+    if(length(ind_2) == 0){ #if there is no new enddate set enddate index to 0
+      ind_2 = 0
+    }
+    ind_u = which(index_u > 0) # check where startdate variables are located
+    ind_u2 = index_u[ind_u] # select locations of startdate variables only
+    ind_joins = which((qol)>0) # setup which joins need to be made based of qol indx
+    
+    # setup basic joins
+    third_part1 = character(5)
+    third_part1[1] = "FROM StudyParticipations_Covid study"
+    third_part1[2] = "LEFT JOIN Baseline b ON b.StudyParticipationID = study.StudyParticipationID"
+    third_part1[3] = "LEFT JOIN Baseline_1 b_1 ON b_1.ID = b.ID"
+    third_part1[4] = "LEFT JOIN [Toestemmingsverklaring onderzoek coronavaccin NIEUW] t ON t.StudyParticipationID = study.StudyParticipationID"
+    third_part1[5] = "LEFT JOIN [Toestemmingsverklaring onderzoek coronavaccin NIEUW_1] t_1 On t_1.ID = t.ID"
+    #set joins for questionaires where needed
+    q_joins = c()
+    for(i in 1:6){
+      q_joins = c(q_joins, paste("LEFT JOIN [Vragenlijst ", i, " onderzoek coronavaccin] q", i, " ON study.StudyParticipationID = q", i, ".StudyParticipationID", sep = ""))
+      q_joins = c(q_joins, paste("LEFT JOIN [Vragenlijst ", i, " onderzoek coronavaccin_1] q", i, "_1 ON q", i, ".ID = q", i, "_1.ID", sep = ""))
+    }
+    third_part2 = character(3)
+    if(ind_u2 > 1){ # set join llt to new if ind_u2 > 1
+      third_part2[1] = paste("LEFT JOIN LLT_CODES llt on q", ind_u, "_1.OtherAE_", var_name, "_New_Primary_Source_Reaction_Text_LLT_CODES_ID = llt.ID", sep = "")
+    } else third_part2[1] = paste("LEFT JOIN LLT_CODES llt on q", ind_u, "_1.OtherAE_", var_name, "_Primary_Source_Reaction_Text_LLT_CODES_ID = llt.ID", sep = "")
+    # joins and where statement
+    third_part2[2] = paste("LEFT JOIN Lareb_Standards_Meddra.dbo.MeddraHierarchyLines med ON llt.LLTCode = med.LLTCode", sep = "")
+    # third_part2[3] = paste("WHERE med.PTName IS NOT NULL AND ", paste(start_date[-c(1,(start_date_l-12):start_date_l)], collapse = ""), " IS NOT NULL AND med.IsDefaultSOC = 1", sep = "")
+    third_part2[3] = paste("WHERE med.IsDefaultSOC = 1 AND q", q_num, ".Coded = '1'", sep = "")
+    #add snipits together
+    third_part = c(third_part1, q_joins, third_part2)
+    return(third_part)
+  }
+  
+  single_query <- function(num, name, index, index2, index3, vaccine_index){
+    #add the all parts of a single query together for other_ae
+    first = first_part(num, vaccine_index)
+    second = second_part_function(num, name, index, index2, index3)
+    sdate = second[1]
+    third = third_part_function(num, name, index, index2, sdate, index3)
+    query = c(first, " ", second, " ", third, " ")
+    return(query)
+  }
+  
+  other_ae_function <- function(){
+    ae_matrix = matrix(0, nrow = 6, ncol = 100) # enddate index matrix, equal to 1 if present, 2 if present and enddate is new, 0 else. rows represent the questionnaire and columns represent the ae variables. 
+    ae_matrix2 = matrix(0, nrow = 6, ncol = 100) # startdate index matrix, similar to ae_matrix.
+    ae_matrix_qol = matrix(0, nrow = 6, ncol = 100) # qol index matrix, similar to ae_matrix.
+    ae_matrix_vaccine = matrix(0, 6, 1)
+    
+    db <- odbcDriverConnect(DB_string) # open database
+    #colnames loop
+    for(q_num in 1:6){ # check what enddate, startdate and qol variables there are based on variables in questionnaire 1 - 6
+      query = paste("SELECT *",
+                    paste("FROM [Vragenlijst ", q_num, " onderzoek coronavaccin_1]", sep = ""),
+                    sep = "") # setup query that returns all variables from questionnaire q_num
+     
+      df_adr <- sqlQuery(db, query, rows_at_time = 1) # query q_num
+      
+      var_names = tolower(colnames(df_adr)) # get colnames and set capital letters to lower
+      split_names = strsplit(var_names, split = "_") # split the names of the variables on "_"
+      for(i in 1:length(var_names)){ # loop through the variables and see whether they are an index for enddate, startdate or qol index matrices
+        test = split_names[[i]] # select split var name
+        check = ("otherae" %in% test + "enddate" %in% test) * 1 - "value" %in% test # check if test is enddate variable for otherae and does not have 'value' in its name.
+        check2 = ("otherae" %in% test + "startdate" %in% test) * 1 - "value" %in% test # check if test is startdate variable and does not have 'value' in its name
+        check_qol = ("otherae" %in% test + "qol" %in% test) * 1 - "value" %in% test # check if test is qol variable for other_ae and does not have value in the name
+        new_check = "new" %in% test # check if 'new' is in test
+        
+        if(sum(sus_vaccine %in% split_names[[i]]) == 6){
+          ##print(q_num)
+          ae_matrix_vaccine[q_num,1] = 1
+        }
+        
+        if(check > 1){ # see check holds
+          ind = as.integer(test[2]) # select which number ae 
+          if(new_check == 0){
+            ae_matrix[q_num, ind] = 1 # set ae_matrix to 1 for q_num and ind
+          }
+          if(new_check == 1){
+            ae_matrix[q_num, ind] = 2 # set ae_matrix to 2 for q_num and ind
+          }
+          
+        }
+        # same as above but startdate matrix
+        if(check2 > 1){
+          ind = as.integer(test[2])
+          if(new_check == 0){
+            ae_matrix2[q_num, ind] = 1
+          }
+          if(new_check == 1){
+            ae_matrix2[q_num, ind] = 2
+          }
+        }
+        # same as above but qol matrix
+        if(check_qol > 1){
+          ind = as.integer(test[2])
+          if(new_check == 0){
+            ae_matrix_qol[q_num, ind] = 1
+          }
+          if(new_check == 1){
+            ae_matrix_qol[q_num, ind] = 2
+          }
+        }
+      }
+    }
+    
+    exist_vars = which(colSums(ae_matrix + ae_matrix2 + ae_matrix_qol)>0) # check which ae columns are non-zero
+    # last_ae = exist_vars[length(exist_vars)] # last column of ae matrices
+    var_names = exist_vars # set var names
+    querys = c("SET NOCOUNT ON") # set up queries
+    for(j in var_names){
+      for(i in 1:6){
+        # setup enddate, startdate and qol index vectors
+        index = ae_matrix[,j]
+        index_2 = ae_matrix2[,j]
+        index_3 = ae_matrix_qol[,j]
+        
+        if(index_2[i] != 0){
+          if(index_3[i] != 0){ # check if qol var exists per questionaire per var name
+            q = single_query(i, j, index, index_2, index_3, ae_matrix_vaccine)
+            querys = c(querys, q, "UNION")
+          }
+        }
+      }
+    }
+    querys_out = querys[-length(querys)] # remove UNION from query vector
+    q_collapse = paste(querys_out, collapse = "\n") # set query vector to 1 string
+    db <- odbcDriverConnect(DB_string) # open database
+    df_other_llts <- sqlQuery(db, q_collapse, rows_at_time = 1) # query from sql
+    # close and remove database
+    odbcClose(db)
+    remove(db)
+    return(list(df_other_llts,querys_out, ae_matrix_vaccine))
+  }
+  
+  df_ae_out = other_ae_function()
+  df_side_effects_out = side_effects_function()
+  df_other_llts_out = other_llt_function()
+  
+  
+  
+  queries = c(df_ae_out[[2]], 
+              "UNION", 
+              df_side_effects_out[[2]],
+              "UNION",
+              df_other_llts_out[[2]]) # combine all queries into 1
+  
+  write.table(queries,
+              file = "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\full_query.txt",
+              quote = F,
+              row.names = F,
+              col.names = F) # save query as .txt file
+  
+  write.table(df_side_effects_out[[2]],
+              file = "S:\\Gebruikers\\Thomas\\projects\\covid query\\main covid queries\\sd_query.txt",
+              quote = F,
+              row.names = F,
+              col.names = F) # save query as .txt file
+  
+  df_ae = df_ae_out[[1]] # ae data df
+  df_side_effects = df_side_effects_out[[1]] # side effects df 
+  df_other_llts = df_other_llts_out[[1]] # other llt df
+  
+  vaccine_index = df_ae_out[[3]]
+  
+  #df_ae = df_ae[-which(is.na(df_ae$QoL) | is.na(df_ae$outcome)),]
+  # index_remove = which(df_ae$survey_no > df_ae$enddate_loc ) #index of rows to remove
+  # index_save = which(df_ae$enddate_loc == 0)
+  # df_ae_save = df_ae[index_save,-which(colnames(df_ae) == 'enddate_loc')]
+  # df_ae = rbind(df_ae[-index_remove,-which(colnames(df_ae) == 'enddate_loc')], df_ae_save)
+  
+  #df_side_effects = side_effects_function()
+  #df_other_llts = get_data_other_ltts()
+  # index_remove = which(df_other_llts$survey_no > df_other_llts$enddate_loc) #index of rows to remove
+  # index_save = which(df_other_llts$enddate_loc == 0)
+  # df_other_llts_save = df_other_llts[index_save,]
+  # df_other_llts = rbind(df_other_llts[-index_remove,], df_other_llts_save)
+  
+  df_main = rbind(df_ae, df_side_effects, df_other_llts) # bind all queries together into one df
+  
+  #uids = unique(df_main$UserID)
+  
+  # query additional info (for example, vacccination_date2, height, weight, etc.)
+  #additional_info_query_txt = readLines("S:\\Gebruikers\\Thomas\\queries\\baseline_query_int.txt")
+    
+  additional_query <- function(vaccine_index){
+    additional_info_query_txt = readLines("S:\\Gebruikers\\Thomas\\queries\\baseline_query_int.txt")
+    part_one = additional_info_query_txt[1:20]
+    part_two = additional_info_query_txt[24:length(additional_info_query_txt)]
+    vaccine = c()
+    for(i in 1:6){
+      if(vaccine_index[i] != 0){
+        vaccine = c(vaccine, paste("\tWHEN q", i, "_1.Suspect_COVID_Vaccin_Vac_Date2_Date IS NOT NULL THEN CONVERT(DATE, q", i, "_1.Suspect_COVID_Vaccin_Vac_Date2_Date)", sep = ""))
+      }
+    }
+    full = c(part_one, vaccine, part_two)
+    
+    additional_info_query_collapse = c()
+    for(i in full){ 
+      additional_info_query_collapse = paste(additional_info_query_collapse, paste(i, "\n", sep = ""), sep = " ")
+    }
+    
+    db <- odbcDriverConnect(DB_string)
+    df_additional <- sqlQuery(db, additional_info_query_collapse, rows_at_time = 1)
+    odbcClose(db)
+    remove(db)
+    #return(full)
+    return(df_additional)
+  }
+  
+  df_additional = additional_query(vaccine_index)
+  
+  df_additional$side_effects = as.numeric(df_additional$UserID %in% df_main$UserID)
+  df_follow_up = df_main[,c("ADR_ID",
+                            "UserID",
+                            "survey_no",
+                            "enddate_loc",
+                            "qol_1",
+                            "qol_2",
+                            "qol_3",
+                            "qol_4",
+                            "qol_5",
+                            "qol_6",
+                            "outcome_1",
+                            "outcome_2",
+                            "outcome_3",
+                            "outcome_4",
+                            "outcome_5",
+                            "outcome_6"
+                            )]
+  
+  remove_cols = c("qol_1",
+             "qol_2",
+             "qol_3",
+             "qol_4",
+                            "qol_5",
+                            "qol_6",
+                            "outcome_1",
+                            "outcome_2",
+                            "outcome_3",
+                            "outcome_4",
+                            "outcome_5",
+                            "outcome_6"
+                            )
+  
+  df_main = df_main[,colnames(df_main)[-which(colnames(df_main) %in% remove_cols)]]
+  return(df_main)
+}
+
+```
+
+#get all data
+```{r}
+df_list = list()
+
+for(i in 1:length(databases)){
+  df_list[[i]] = get_all_data(databases[i])
+}
+```
+
+#dose
+```{r}
+dose_df <- function(df){
+  
+  start_adr_date <- str_extract(df$startdate, '[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}')
+  #start_adr_date
+  start_adr_date <- as.Date(start_adr_date, format="%m-%d-%Y")
+  #start_adr_date
+  tto_days <- str_extract(df$startdate, '[0-9]{1,}.Days')
+  tto_days <- as.numeric(gsub("([0-9]+).*$", "\\1", tto_days))
+  tto_hours <- str_extract(df$startdate, '[0-9]{1,}.Hours')
+  tto_hours <- as.numeric(gsub("([0-9]+).*$", "\\1", tto_hours))
+  tto_weeks <- str_extract(df$startdate, '[0-9]{1,}.Weeks')
+  tto_weeks <- as.numeric(gsub("([0-9]+).*$", "\\1", tto_weeks))
+  
+  startdate_tto = start_adr_date
+  startdate_tto[which(!is.na(tto_hours) | !is.na(tto_days) | !is.na(tto_weeks))] = NA
+  survey_complete_date = df$survey_complete_date
+  startdate_tto[is.na(startdate_tto)] = as.Date(survey_complete_date[is.na(startdate_tto)], format="%m/%d/%Y")
+  startdate_tto[is.na(startdate_tto)] = survey_complete_date[is.na(startdate_tto)]
+  
+  
+  start_or_survey = str_split(startdate_tto, pattern = "-")
+  start_or_survey_int = numeric(length(start_or_survey))
+  
+  dose2 = str_split(df$vaccine_date2, pattern = "-")
+  dose2_int = numeric(length(dose2))
+  suppressWarnings({
+  for(i in 1:length(dose2_int)){
+    start_or_survey_int[i] = as.numeric(paste(start_or_survey[[i]], collapse = ""))
+    dose2_int[i] = as.numeric(paste(dose2[[i]], collapse = ""))
+  }
+  })
+  
+  df$dose = NA
+  df$dose[which(start_or_survey_int >= dose2_int)]  = 2
+  df$dose[which(start_or_survey_int < dose2_int)]  = 1
+  df$dose[df$vaccine == "Janssen"] = 1
+  df$dose[is.na(df$vaccine_date2)] = 1
+  return(df)
+}
+
+
+
+for(i in 1:length(databases)){
+  print(i)
+  df_list[[i]] = dose_df(df_list[[i]])
+  print(sum(is.na(df_list[[i]]$dose)))
+}
+
+df = df_list[[1]]
+
+```
+#double side effects
+```{r}
+double_side_effects_list = list()
+
+double_side_effects_func <- function(df){
+  double_sideeffects = NULL
+  uids = unique(df$UserID)
+  
+  progress = seq(0, length(uids), round(length(uids)/10))
+  for(i in 1:length(uids)){
+  
+    if(i %in% progress){
+      print(paste(round(i/length(uids) * 100,0), "%", sep = ""))
+    }
+    uid = uids[i]
+    rows_uid = df[which(df$UserID == uid),]
+    pt_table = as.data.frame(table(rows_uid$PTName))
+    pt_table = pt_table[which(pt_table$Freq>1),]
+    if(length(pt_table)>0){
+      for(j in 1:nrow(pt_table)){
+        pt = pt_table[j,1]
+        #rows_uid_pt =
+        for(dose in 1:2){
+          start_dates = rows_uid$startdate_reaction[which(rows_uid$PTName == pt & rows_uid$dose == dose)]
+          end_dates = rows_uid$enddate[which(rows_uid$PTName == pt & rows_uid$dose == dose)]
+          
+          if(length(unique(start_dates)) > 1 | length(unique(end_dates)) > 1){
+            save_rows = rows_uid[which(rows_uid$PTName == pt & rows_uid$dose == dose),]
+  
+            if(length(unique(start_dates)) >= length(unique(end_dates))){
+              dist_rows = distinct(save_rows, startdate_reaction, .keep_all = T)
+            }
+            if(length(unique(start_dates)) < length(unique(end_dates))){
+              dist_rows = distinct(save_rows,  enddate, .keep_all = T)
+            }
+            
+            double_sideeffects = rbind(double_sideeffects, dist_rows)
+            
+          }
+        }
+      }
+    }
+  }
+  
+  return(double_sideeffects)
+}
+
+for(i in 1:length(databases)){
+  double_side_effects_list[[i]] = double_side_effects_func(df_list[[i]])
+}
+
+
+```
+
+# save 
+```{r}
+out_list = list('BELGIUM' = double_side_effects_list[[1]],
+                'FRANCE' = double_side_effects_list[[2]],
+                'ITALY' = double_side_effects_list[[3]],
+                'UK' = double_side_effects_list[[4]])
+
+fname <- paste(
+  "S:\\Kernproces Monitoring\\1. LIM inhoudelijk\\3. Onderzoeken\\1. Lopend\\Corona LIM\\Data extractie & analyse\\1.extractie\\",
+  "double_side_effects_INT.xlsx"
+  ,sep=""
+)
+
+
+write.xlsx(out_list,
+           file = fname,
+           rowNames = T,
+           colNames = T)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,1333 @@
+---
+title: "Cannabis analyse"
+author: "Thomas Lieber"
+date: "31-3-2022"
+output: html_document
+---
+
+to do:
+ - lange vs nieuwe klopt niet (zie tabel 1, 6, 12) --> komt omdat er een participant is waar het onbekend is
+ - excludeer in al je queries de Uids
+ - stuur disease / symptomen mat
+ 
+vragen:
+- wat als iemand met een middel een korte maar ook lange gebruiker is? 1x lang is lang
+- proporties ipv nummers?
+
+Stelling positief effect medicinale cannabis op klachten onderverdeeld naar mannen en vrouwen (en ook indicatie als dat mogelijk is en ook nieuwe (< 6 mnd) vs langdurige gebruikers (> 6 mnd) Mag ook in meerdere tabellen om het overzichtelijk te houden) -> indicatie is symptomen/ziekte
+
+- indicatie?
+
+- tabel 7 op PT niveau?
+
+
+# set directory
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\')
+```
+
+# empty workingspace
+```{r}
+rm(list=ls())
+```
+
+# library
+```{r}
+library(openxlsx)
+library(RODBC)
+library(rjson)
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+```
+
+# data inladen
+```{r}
+# query additional info (for example, vacccination_date2, height, weight, etc.)
+table1_txt = readLines("S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\queries\\new_tabel1_query.txt")
+table1_query_collapse = c()
+for(i in table1_txt){ 
+  table1_query_collapse = paste(table1_query_collapse, paste(i, "\n", sep = ""), sep = " ")
+}
+
+read_txt_sql <- function(x){
+  table_txt = readLines(x)
+  table_query_collapse = c()
+  for(i in table_txt){ 
+    table_query_collapse = paste(table_query_collapse, paste(i, "\n", sep = ""), sep = " ")
+  }
+  db <- odbcDriverConnect("Driver={SQL Server};Server=NLLARSQL51\\NLLARSQL52;Database=FLEXLIM_CANNABIS_V6_ANALYSE;Trusted_Connection=Yes")
+  df_table <- sqlQuery(db, table_query_collapse, rows_at_time = 1)
+  odbcClose(db)
+  remove(db)
+
+  return(df_table)
+}
+
+db <- odbcDriverConnect("Driver={SQL Server};Server=NLLARSQL51\\NLLARSQL52;Database=FLEXLIM_CANNABIS_V6_ANALYSE;Trusted_Connection=Yes")
+df_table1 <- sqlQuery(db, table1_query_collapse, rows_at_time = 1)
+odbcClose(db)
+remove(db)
+
+table2 = "S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\queries\\tabel2_query.txt"
+df_table2 = read_txt_sql(table2)
+df_table2 = df_table2[which(df_table2$type0 != "other"),]
+
+tabel_bijwerkingen = "S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\queries\\tabel_bijwerkingen.txt"
+df_table_sd = read_txt_sql(tabel_bijwerkingen)
+x = df_table_sd[-which(df_table_sd$IsDefaultSOC == 0),]
+df_table_sd = df_table_sd[which(df_table_sd$type0 != "other"),]
+
+
+comed_df = read_txt_sql("S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\queries\\table_co_med_Query.txt")
+```
+
+# cleaning table 1
+```{r}
+## remove UserID
+##
+remove_uids = c('85DA02D5-7EB4-4899-A84F-E5BABA812593','8A7F1B8D-1C85-4E9A-97AF-B5393F723EB8','6A4B4586-7E5F-4655-AD0D-D0D3A3E57699'
+,'86132C8A-91F6-49E0-9453-5ACD04EF4FA7','C912D6BF-4C28-4060-8824-99E1D4FDA2F5', 'fecb2e70-11f1-44c1-b2a3-d4fd432cce34', '161A4140-BF00-4476-AB4D-F5A7603AF99B', '40646ACD-8CC4-415F-B308-792122A9066C',
+'D04F96CC-9EAC-4FD1-8D86-70893B8E0ECE', 'DC7164C9-9E23-43D1-B0DF-728A9922CBE3', '418BA424-AD54-46B8-9817-84B570159205', 'AD3A5887-2C9D-4CC8-A06F-D11FACEB2876', '03BCB0FB-FD54-497F-A0B8-E80AACED247E'
+)
+df_table_sd = df_table_sd[-which(df_table_sd$uids %in% remove_uids),]
+df_table_sd = df_table_sd[which(df_table_sd$IsDefaultSOC == 1),]
+
+df_table2 = df_table2[-which(df_table2$uids %in% remove_uids),]
+comed_df = comed_df[-which(comed_df$UserID %in% remove_uids),]
+
+## education
+##
+df_table1$General_Education[which(df_table1$General_Education == "", arr.ind = T)] = "Niet van toepassing/weet ik niet"
+
+## type
+##
+type_mat = ifelse(!is.na(df_table1[,9:28]),
+                  1,
+                  0)
+
+remove_startdates = str_split(colnames(df_table1[,9:28]), pattern = "_Start")
+names = character(28-8)
+for(i in 1:length(names)){
+  names[i] = remove_startdates[[i]][1]
+}
+colnames(type_mat) = names
+
+for(j in 1:length(names)){
+  type_mat[which(type_mat[,j] == 1),j] = names[j]
+}
+
+oil = c('Bedica_2_oil'
+,'Bediol_CBD_THC_oil'
+,'Bedrocan_2_oil'
+,'BedrocanTHC_bedroliteCBD_oil'
+,'Bedrolite_10_oil'
+,'Bedrolite_2_oil'
+,'Cannabis_CBD_2_oil'
+,'Cannabis_CBD_5_oil'
+,'Indica_CBD_THC_5_5_oil'
+,'Indica_THC_2_oil'
+,'Sativa_CBD_THC_2_1_3_oil'
+,'Sativa_CBD_THC_5_10_oil'
+,'Sativa_CBD_THC_5_2_oil'
+,'Sativa_THC_2_oil')
+
+granulate = c(
+'Bedica_gran',
+'Bediol_gran',
+'Bedrolite_gran'
+)
+
+flos = c(
+'Bedrobinol',
+'Bedrocan')
+
+other = 'Othermedcan1'
+
+oil_vec = numeric(nrow(type_mat))
+granulate_vec = numeric(nrow(type_mat))
+flos_vec = numeric(nrow(type_mat))
+other_vec = numeric(nrow(type_mat))
+
+for(i in 1:nrow(type_mat)){
+  oil_vec[i] = any(tolower(type_mat[i,]) %in% tolower(oil))
+  granulate_vec[i] = any(tolower(type_mat[i,]) %in% tolower(granulate))
+  flos_vec[i] = any(tolower(type_mat[i,]) %in% tolower(flos))
+  other_vec[i] = any(tolower(type_mat[i,]) %in% tolower(other))
+}
+
+df_table1$oil = oil_vec
+df_table1$granulate = granulate_vec
+df_table1$flos = flos_vec
+df_table1$other = other_vec
+
+## lange gebruikers
+#
+lange = numeric(nrow(df_table1))
+nieuwe = numeric(nrow(df_table1))
+
+nieuwe_ind = c("Korter dan 1 maand geleden",
+               "1 tot 6 maanden geleden")
+
+lange_ind = c("6 tot 12 maanden geleden",
+              "1 tot 3 jaar geleden", 
+              "3 tot 5 jaar geleden",
+              "Langer dan 5 jaar geleden")
+
+for(j in 9:28){
+  split = str_split(df_table1[,j], pattern = ", ")
+  for(i in 1:nrow(df_table1)){
+    if(split[[i]][1] %in% lange_ind){
+      lange[i] = 1 # lange[i] + 1
+    }
+    if(split[[i]][1] %in% nieuwe_ind){
+      nieuwe[i] = 1 # nieuwe[i] + 1
+    }
+  }
+}
+
+nieuwe[which(nieuwe + lange > 1)] = 0
+
+df_table1$lange = lange
+df_table1$nieuwe = nieuwe
+```
+
+# table 1
+```{r}
+N = nrow(df_table1)
+
+table1 = df_table1 %>%
+                  group_by(gender) %>%
+                  summarize(N = length(UserID),
+                            #mean_age = mean(Leeftijd),
+                            'leeftijd 0 - 20' = sum(Leeftijd < 21),
+                            'leeftijd 21 - 40' = sum(Leeftijd > 20 & Leeftijd < 41),
+                            'leeftijd 41 - 60' = sum(Leeftijd > 40 & Leeftijd < 61),
+                            'leeftijd 61 - 80' = sum(Leeftijd > 60 & Leeftijd < 81),
+                            'leeftijd 80+' = sum(Leeftijd > 80),
+                            'Transvaal apotheek' = sum(Use_MedCan_Pharmacy == "Transvaal apotheek (Den Haag)"),
+                            'Andere apotheek' = sum(Use_MedCan_Pharmacy =="Andere apotheek"),
+                            'VAL' = sum(Use_MedCan_Pharmacy == "VAL (Verenigde Apotheken Limburg)" ),
+                            'Clinical Cannabis Care' = sum(Use_MedCan_Pharmacy =="Clinical Cannabis Care (Breukelen)"),
+                            'Havo, vwo, mbo, hbs, mms' = sum(General_Education == "Havo, vwo, mbo, hbs, mms"),
+                            'Hbo, wo bachelor' = sum(General_Education == "Hbo, wo bachelor"),
+                            'Niet van toepassing/weet ik niet' = sum(General_Education == "Niet van toepassing/weet ik niet"),
+                            'Vmbo, mbo1, avo onderbouw2' = sum(General_Education == "Vmbo, mbo1, avo onderbouw2"),
+                            'Basisonderwijs' = sum(General_Education == "Basisonderwijs"),
+                            'Wo master, doctor' = sum(General_Education == "Wo master, doctor"),
+                            'Oil' = sum(oil),
+                            granulate = sum(granulate),
+                            flos = sum(flos),
+                            other = sum(other),
+                            'lange gebruikers' = sum(lange),
+                            'nieuwe gebruikers' = sum(nieuwe)
+                  )
+
+table1
+```
+
+
+#age histogram
+```{r}
+p<-ggplot(df_table1, aes(x=Leeftijd)) + 
+  geom_histogram(color="black", fill="white") +
+  ylab("Frequentie") +
+  ggtitle("Leeftijd Histogram") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+p #+ theme_void()
+
+
+
+```
+
+Tabel 2: Per productgroep (olie/flos/granulaat) en opgesplitst naar mannen en vrouwen:	
+•	Startdatum
+•	Dosering
+•	Waarom voor dit product gekozen
+•	Tevredenheid gekozen product
+
+
+
+# cleaning table 2 startdates
+```{r}
+types = c("oil", "flos", "granulate")
+table2_startdates_split = str_split(df_table2$startdate, pattern = ", namelijk")
+table2_startdates_cleaned = character(nrow(df_table2))
+#start_dates = unique(df_table2$startdate)
+for(i in 1:nrow(df_table2)){
+  table2_startdates_cleaned[i] = table2_startdates_split[[i]][1]
+}
+start_dates = unique(table2_startdates_cleaned)
+table2_startdates_p = matrix(NA, length(start_dates), length(types))
+table2_startdates_g = matrix(NA, length(start_dates), 2)
+
+start_dates = unique(table2_startdates_cleaned)
+
+for(j in 1:length(types)){
+  for(i in 1:length(start_dates)){
+    table2_startdates_p[i,j] = length(table2_startdates_cleaned[which(df_table2$type0 == types[j] & table2_startdates_cleaned == start_dates[i])])
+  }
+}
+
+for(i in 1:length(start_dates)){
+  table2_startdates_g[i,1] = length(table2_startdates_cleaned[which(df_table2$General_Gender == "Man" & table2_startdates_cleaned == start_dates[i])])
+  table2_startdates_g[i,2] = length(table2_startdates_cleaned[which(df_table2$General_Gender == "Vrouw" & table2_startdates_cleaned == start_dates[i])])
+}
+
+start_dates[7] = "onbekend"
+colnames(table2_startdates_p) = types 
+colnames(table2_startdates_g) = c("Man", "Vrouw")
+row.names(table2_startdates_p) = start_dates 
+row.names(table2_startdates_g) = start_dates 
+
+```
+
+# per geslacht
+```{r}
+types = c("oil", "flos", "granulate")
+table2_startdates_split = str_split(df_table2$startdate, pattern = ", namelijk")
+df_table2_types = df_table2[which(df_table2$product != "other"),]
+table2_startdates_cleaned = character(nrow(df_table2))
+#start_dates = unique(df_table2$startdate)
+for(i in 1:nrow(df_table2)){
+  table2_startdates_cleaned[i] = table2_startdates_split[[i]][1]
+}
+
+df_table2$start_date_c = table2_startdates_cleaned
+uids = unique(df_table2$uids)
+
+
+df_table2_g = data.frame(uids = unique(df_table2$uids),
+                         start_date = NA,
+                         gender = NA,
+                         content = NA,
+                         reason = NA)
+
+start_dates_ranked = data.frame(start_dates, rank = c(3,2,1,5,6,4,7))
+#longest_startdates = start_dates_ranked[which(row$start_date_c %in% start_dates),]
+#longest_startdate = longest_startdates$start_dates[which.min(longest_startdates$rank)]
+
+for(i in 1:nrow(df_table2_g)){
+  #print(i)
+  rows = df_table2[which(df_table2$uids == uids[i]),]
+  if(nrow(rows) > 1){
+    longest_startdates = start_dates_ranked[which(start_dates %in% rows$start_date_c),]
+    longest_startdate = longest_startdates$start_dates[which.min(longest_startdates$rank)]
+    df_table2_g$start_date[i] = longest_startdate
+    df_table2_g$gender[i] = unique(rows$General_Gender)
+    df_table2_g$content[i] = rows$content[1]
+    df_table2_g$reason[i] = rows$choice[1]
+    #print(i)
+  } 
+  if(nrow(rows) == 1){
+    df_table2_g$start_date[i] = rows$start_date_c
+    df_table2_g$gender[i] = rows$General_Gender
+    df_table2_g$content[i] = rows$content[1]
+    df_table2_g$reason[i] = rows$choice[1]
+    
+  }
+}
+ 
+
+table2_startdates_g = matrix(NA, length(start_dates), 2)
+for(i in 1:length(start_dates)){
+  table2_startdates_g[i,1] = length(table2_startdates_cleaned[which(df_table2$General_Gender == "Man" & table2_startdates_cleaned == start_dates[i])])
+  table2_startdates_g[i,2] = length(table2_startdates_cleaned[which(df_table2$General_Gender == "Vrouw" & table2_startdates_cleaned == start_dates[i])])
+}
+colnames(table2_startdates_g) = c("Man", "Vrouw")
+row.names(table2_startdates_g) = start_dates 
+#df_table1$gender[which(df_table1$lange == 0 & df_table1$nieuwe == 0)] een onbekend is vrouw
+table2_startdates_g[7,2] = 1
+```
+# tabel 2 dosering
+
+
+# tabel 2 waarom product
+```{r}
+choice = df_table2$choice
+choice_split = str_split(choice, pattern = ", ")
+
+choice_mat = matrix(NA, length(choice), 10)
+for(i in 1:length(choice)){
+  row = choice_split[[i]]
+  choice_mat[i,1:length(row)] = row
+}
+choice_mat2 = choice_mat
+
+anders_mat = matrix(NA, length(choice), 10)
+ind_anders = which(choice_mat == "Anders", arr.ind = T)
+
+for(i in 1:nrow(ind_anders)){
+  anders_mat[ind_anders[i,1],(ind_anders[i,2]+1):10] = choice_mat[ind_anders[i,1],(ind_anders[i,2]+1):10] 
+  choice_mat[ind_anders[i,1],(ind_anders[i,2]+1):10] = NA
+}
+
+ind_remove = which(colSums(is.na(choice_mat)) == nrow(choice_mat))
+choice_mat = choice_mat[,-ind_remove]
+
+# choice anders
+anders_mat[,1] = df_table2$uids
+for(i in 1:nrow(anders_mat)){
+  row = anders_mat[i,-1]
+  row_no_na = row[!is.na(row)]
+  anders_mat[i,2:length(row_no_na)]
+}
+table2_choice_anders_mat = anders_mat[,-which(colSums(is.na(anders_mat)) == nrow(anders_mat))]
+
+
+choices = unique(as.character(choice_mat))[which(!is.na(unique(as.character(choice_mat))))]
+
+table2_choices_p = matrix(NA, length(choices), length(types))
+table2_choices_g = matrix(NA, length(choices), 2)
+
+
+
+for(j in 1:length(types)){
+  sub_choice_mat = choice_mat[which(df_table2$type0 == types[j]),]
+  for(i in 1:length(choices)){
+    table2_choices_p[i,j] = sum(as.character(sub_choice_mat) == choices[i], na.rm = T)
+  }
+}
+
+choice_mat_v = choice_mat[which(df_table2$General_Gender == "Vrouw"),]
+choice_mat_m = choice_mat[which(df_table2$General_Gender == "Man"),]
+
+for(i in 1:length(choices)){
+  table2_choices_g[i,1] = sum(as.character(choice_mat_v) == choices[i], na.rm = T)
+  table2_choices_g[i,2] = sum(as.character(choice_mat_m) == choices[i], na.rm = T)
+
+}
+
+choices[length(choices)] = "onbekend"
+colnames(table2_choices_p) = types 
+colnames(table2_choices_g) = c("Man", "Vrouw")
+row.names(table2_choices_p) = choices 
+row.names(table2_choices_g) = choices 
+
+```
+
+# tabel 2 waarom product
+```{r}
+choice = df_table2_g$reason
+choice_split = str_split(choice, pattern = ", ")
+
+choice_mat = matrix(NA, length(choice), 10)
+for(i in 1:length(choice)){
+  row = choice_split[[i]]
+  choice_mat[i,1:length(row)] = row
+}
+choice_mat2 = choice_mat
+ind_anders = which(choice_mat == "Anders", arr.ind = T)
+for(i in 1:nrow(ind_anders)){
+  choice_mat[ind_anders[i,1],(ind_anders[i,2]+1):10] = NA
+}
+
+
+
+
+ind_remove = which(colSums(is.na(choice_mat)) == nrow(choice_mat))
+choice_mat = choice_mat[,-ind_remove]
+
+
+choices = unique(as.character(choice_mat))[which(!is.na(unique(as.character(choice_mat))))]
+
+#table2_choices_p = matrix(NA, length(choices), length(types))
+table2_choices_g = matrix(NA, length(choices), 2)
+
+
+
+# for(j in 1:length(types)){
+#   sub_choice_mat = choice_mat[which(df_table2$type0 == types[j]),]
+#   for(i in 1:length(choices)){
+#     table2_choices_p[i,j] = sum(as.character(sub_choice_mat) == choices[i], na.rm = T)
+#   }
+# }
+
+choice_mat_v = choice_mat[which(df_table2_g$gender == "Vrouw"),]
+choice_mat_m = choice_mat[which(df_table2_g$gender == "Man"),]
+
+for(i in 1:length(choices)){
+  table2_choices_g[i,1] = sum(as.character(choice_mat_v) == choices[i], na.rm = T)
+  table2_choices_g[i,2] = sum(as.character(choice_mat_m) == choices[i], na.rm = T)
+
+}
+
+choices[length(choices)] = "onbekend"
+# colnames(table2_choices_p) = types 
+colnames(table2_choices_g) = c("Man", "Vrouw")
+# row.names(table2_choices_p) = choices 
+row.names(table2_choices_g) = choices
+
+
+
+```
+
+
+# tabel 2 tevredenheid product
+
+```{r}
+contents = unique(df_table2$content)
+table2_contents_p = matrix(NA, length(contents), length(types))
+table2_contents_g = matrix(NA, length(contents), 2)
+
+for(j in 1:length(types)){
+  for(i in 1:length(contents)){
+    table2_contents_p[i,j] = sum(df_table2$content[which(df_table2$type0 == types[j])] == contents[i] ,na.rm = T)
+  }
+}
+
+for(i in 1:length(contents)){
+  table2_contents_g[i,1] = sum(df_table2$content[which(df_table2$General_Gender == "Man")] == contents[i],na.rm = T)
+  table2_contents_g[i,2] = sum(df_table2$content[which(df_table2$General_Gender == "Vrouw")] == contents[i],na.rm = T)
+}
+
+contents[length(contents)] = "onbekend"
+colnames(table2_contents_p) = types 
+colnames(table2_contents_g) = c("Man", "Vrouw")
+row.names(table2_contents_p) = contents 
+row.names(table2_contents_g) = contents
+```
+
+# tabel 2 tevredenheid gender
+```{r}
+contents = unique(df_table2_g$content)
+table2_contents_g = matrix(NA, length(contents), 2)
+
+
+for(i in 1:length(contents)){
+  table2_contents_g[i,1] = sum(df_table2_g$content[which(df_table2_g$gender == "Man")] == contents[i],na.rm = T)
+  table2_contents_g[i,2] = sum(df_table2_g$content[which(df_table2_g$gender == "Vrouw")] == contents[i],na.rm = T)
+}
+
+contents[length(contents)] = "onbekend"
+colnames(table2_contents_g) = c("Man", "Vrouw")
+row.names(table2_contents_g) = contents
+
+
+```
+
+Tabel 3: Bereidheid overstap flos naar granulaat onderverdeeld naar mannen en vrouwen
+```{r}
+df_table3 = df_table1[,c("UserID",
+                         "gender",
+                         "Product",
+                         "Bedrocan_Startdate",
+                         "Bedrobinol_Startdate",
+                         "Bedrocan_Willingness",
+                         "Bedrobinol_Willingness",
+                         "flos")]
+
+df_table3 = df_table3[which(df_table3$flos == 1),]
+
+
+table3 = df_table3 %>%
+                  group_by(gender) %>%
+                  summarize('aantal flos gebruikers' = length(UserID),
+                            'Aantal Bedrocan gebruikers' = sum(!is.na(Bedrocan_Willingness)),
+                            'Aantal Bedrobinol gebruikers' = sum(!is.na(Bedrobinol_Willingness)),
+                            'Overstap Bedrocan' = sum(Bedrocan_Willingness == "Ja", na.rm = T),
+                            'Overstap Bedrobinol' = sum(Bedrobinol_Willingness == "Ja", na.rm = T)
+                  )
+
+table3
+```
+
+Tabel 4: Coffeeshop gebruik onderverdeeld naar mannen en vrouwen:
+
+· In het verleden cannabis uit de coffeeshop gebruikt
+
+· Wordt op dit moment ook cannabis uit de coffeeshop gebruik
+
+
+```{r}
+df_table4 = df_table1[,c("UserID",
+                         "gender",
+                         "History_MedCan_Coffeeshop",
+                         "History_MedCan_Use_Can_Coffeeshop_Now")]
+
+
+table4 = df_table4 %>%
+                  group_by(gender) %>%
+                  summarize(#'aantal flos gebruikers' = length(UserID),
+                            'Gebruikers Coffeeshop gebruik verleden' = sum(History_MedCan_Coffeeshop == "Ja"),
+                            'Gebruikers Coffeeshop gerbuik nu' = sum(History_MedCan_Use_Can_Coffeeshop_Now == "Ja")
+                  )
+table4
+```
+
+Tabel 5: Wie heeft het voorgeschreven en waarvoor:
+ 
+· Voorschrijver
+
+· Indicatie_voor welke ziekte
+
+· Indicatie_voor welke symptomen
+
+RETURN LATER
+
+```{r}
+df_table5 = df_table1[,c("UserID",
+                         "gender",
+                         "Reason_Use_MedCan_Described_By_Who",
+                         "Reason_Use_MedCan_Disease",
+                         "Reason_Use_MedCan_Specified_Symptom")]
+
+df_table5.1 = df_table5 %>%
+                        summarise('Huisarts' = sum(Reason_Use_MedCan_Described_By_Who == "Huisarts"),
+                                  'Specialist' = sum(Reason_Use_MedCan_Described_By_Who == "Specialist"),
+                                  'Onbekend' = sum(Reason_Use_MedCan_Described_By_Who != "Specialist" & Reason_Use_MedCan_Described_By_Who != "Huisarts")
+                        )
+df_table5.1       
+```
+
+# Symptomen en ziektes
+- alluvial plots ofso?
+```{r}
+diseases = df_table1$Reason_Use_MedCan_Disease
+diseases_split = str_split(diseases, pattern = ", ")
+disease_mat = matrix(NA, length(diseases), 10)
+for(i in 1:length(diseases)){
+  row = diseases_split[[i]]
+  disease_mat[i,1:length(row)] = row
+}
+disease_mat2 = disease_mat
+disease_anders_mat = matrix(NA, length(diseases), 10)
+
+ind_anders = which(disease_mat == "Anders", arr.ind = T)
+for(i in 1:nrow(ind_anders)){
+  disease_anders_mat[ind_anders[i,1],(ind_anders[i,2]+1):10] = disease_mat[ind_anders[i,1],(ind_anders[i,2]+1):10]
+  disease_mat[ind_anders[i,1],(ind_anders[i,2]+1):10] = NA
+}
+
+ind_remove = which(colSums(is.na(disease_mat)) == nrow(disease_mat))
+disease_mat = disease_mat[,-ind_remove]
+
+
+# choice anders
+disease_anders_mat[,1] = df_table1$UserID
+for(i in 1:nrow(disease_anders_mat)){
+  row = disease_anders_mat[i,-1]
+  row_no_na = row[!is.na(row)]
+  disease_anders_mat[i,2:length(row_no_na)]
+}
+table5_disease_anders_mat = disease_anders_mat[,-which(colSums(is.na(disease_anders_mat)) == nrow(disease_anders_mat))]
+
+
+symptoms = df_table1$Reason_Use_MedCan_Specified_Symptom
+symptoms_split = str_split(symptoms, pattern = ", ")
+symptoms_mat = matrix(NA, length(symptoms), 10)
+for(i in 1:length(symptoms)){
+  row = symptoms_split[[i]]
+  symptoms_mat[i,1:length(row)] = row
+}
+symptoms_mat2 = symptoms_mat
+symptoms_anders_mat = matrix(NA, length(diseases), 10)
+ind_anders = which(symptoms_mat == "Anders", arr.ind = T)
+for(i in 1:nrow(ind_anders)){
+  symptoms_anders_mat[ind_anders[i,1],(ind_anders[i,2]+1):10] = symptoms_mat[ind_anders[i,1],(ind_anders[i,2]+1):10]
+  symptoms_mat[ind_anders[i,1],(ind_anders[i,2]+1):10] = NA
+}
+
+ind_remove = which(colSums(is.na(symptoms_mat)) == nrow(symptoms_mat))
+symptoms_mat = symptoms_mat[,-ind_remove]
+
+
+# choice anders
+symptoms_anders_mat[,1] = df_table1$UserID
+for(i in 1:nrow(symptoms_anders_mat)){
+  row = symptoms_anders_mat[i,-1]
+  row_no_na = row[!is.na(row)]
+  symptoms_anders_mat[i,2:length(row_no_na)]
+}
+table5_symptoms_anders_mat = symptoms_anders_mat[,-which(colSums(is.na(symptoms_anders_mat)) == nrow(symptoms_anders_mat))]
+
+
+
+fname <- paste(
+  "S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\R\\",
+  "disease_symptoms_sheet.xlsx"
+  ,sep=""
+)
+
+out_list = list(disease = disease_mat2,
+                symptom = symptoms_mat2)
+
+write.xlsx(out_list,
+           file = fname,
+           rowNames = T,
+           colNames = T)
+```
+
+# Tabel 5 ziektes
+```{r}
+mat_table5_d = as.data.frame(readxl::read_xlsx("S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\R\\disease_symptoms_sheet_cet.xlsx"))
+mat_table5_s = as.data.frame(readxl::read_xlsx("S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\R\\disease_symptoms_sheet_cet.xlsx", sheet = "symptom"))
+
+table5_d_vec = c()
+table5_s_vec = c()
+for(i in 1:ncol(mat_table5_d)){
+  table5_d_vec = rbind(table5_d_vec, mat_table5_d[,i])
+  table5_s_vec = rbind(table5_s_vec, mat_table5_s[,i])
+}
+table5_d_vec = gsub('[0-9]+', NA, table5_d_vec)
+table5_d_vec = table5_d_vec[!is.na(table5_d_vec)]
+
+table5_s_vec = gsub('[0-9]+', NA, table5_s_vec)
+table5_s_vec = table5_s_vec[!is.na(table5_s_vec)]
+
+table5_d = as.data.frame(table(table5_d_vec))
+table5_s = as.data.frame(table(table5_s_vec))
+
+table5_d = table5_d[order(-table5_d$Freq),]
+table5_s = table5_s[order(-table5_s$Freq),]
+
+
+```
+
+
+Tabel 6: Stelling positief effect medicinale cannabis op klachten onderverdeeld naar mannen en vrouwen (en ook indicatie als dat mogelijk is en ook nieuwe (< 6 mnd) vs langdurige gebruikers (> 6 mnd) Mag ook in meerdere tabellen om het overzichtelijk te houden)
+
+- indicatie?
+
+```{r}
+df_table6 = df_table1[,c("UserID",
+                         "gender",
+                         "Reason_Use_MedCan_Rack",
+                         "lange",
+                         "nieuwe")]
+
+table6.l = df_table6[which(df_table6$lange == 1),] %>%
+                  group_by(gender) %>%
+                  summarize(
+                            "Helemaal mee eens" = sum(Reason_Use_MedCan_Rack == "Helemaal mee eens"),
+                            "Mee eens" = sum(Reason_Use_MedCan_Rack == "Mee eens"),
+                            "Neutraal" = sum(Reason_Use_MedCan_Rack == "Neutraal"),
+                            "Mee oneens" = sum(Reason_Use_MedCan_Rack == "Mee oneens"),
+                            "Helemaal mee oneens" = sum(Reason_Use_MedCan_Rack == "Helemaal mee oneens"),
+                  )
+
+table6.l
+
+
+table6.n = df_table6[which(df_table6$nieuwe == 1),] %>%
+                  group_by(gender) %>%
+                  summarize(
+                            "Helemaal mee eens" = sum(Reason_Use_MedCan_Rack == "Helemaal mee eens"),
+                            "Mee eens" = sum(Reason_Use_MedCan_Rack == "Mee eens"),
+                            "Neutraal" = sum(Reason_Use_MedCan_Rack == "Neutraal"),
+                            "Mee oneens" = sum(Reason_Use_MedCan_Rack == "Mee oneens"),
+                            "Helemaal mee oneens" = sum(Reason_Use_MedCan_Rack == "Helemaal mee oneens"),
+                  )
+
+table6.n
+
+```
+
+Tabel 7: Bijwerkingen opgesplitst naar productgroep (olie/flos/granulaat)
+ER ZIJN DEELNEMERS MET MEERDERE MIDDELEN, ER KAN NIET ONDERSCHEID GEMAAKT WORDEN TUSSEN BIJWERKINGEN BIJ DEZE DEELNEMERS
+
+
+# tabel 7 
+```{r}
+tabel7 = df_table_sd[which(!is.na(df_table_sd$PTName)),]
+
+upts = unique(tabel7$PTName)
+types = c("oil", "granulate", "flos")
+tabel7_mat = matrix(0, length(upts), length(types))
+colnames(tabel7_mat) = types
+
+for(j in 1:length(types)){
+  for(i in 1:length(upts)){
+    tabel7_mat[i,j] = length(tabel7$uids[which(tabel7$PTName == upts[i] & tabel7$type0 == types[j])])
+  }
+}
+tabel7_df = data.frame('PTName' = upts[-1],
+                       'oil' = tabel7_mat[-1,1],
+                       'granulate' = tabel7_mat[-1,2],
+                       'flos' = tabel7_mat[-1,3]
+                       #,'other' = tabel7_mat[-1,4]
+                       )
+tabel7_df 
+```
+
+
+
+
+Tabel 8: Bijwerkingen opgesplitst naar langdurige (>6 mnd) en nieuwe gebruikers (<6 mnd)
+```{r}
+split = str_split(tabel7$startdate, pattern = ", ")
+startdate = character(nrow(tabel7))
+for(i in 1:nrow(tabel7)){
+  startdate[i] = split[[i]][1]
+}
+
+tabel7$startdate = startdate
+
+tabel7$lange = NA
+tabel7$lange[which(tabel7$startdate %in% nieuwe_ind)] = "nieuwe"
+tabel7$lange[which(tabel7$startdate %in% lange_ind)] = "lange"
+
+tabel8_mat = matrix(0, length(upts), 2)
+colnames(tabel8_mat) = c("nieuwe", "lange")
+#row.names(tabel7_mat) = upts
+
+for(i in 1:length(upts)){
+    tabel8_mat[i,1] = length(tabel7$uids[which(tabel7$PTName == upts[i] & tabel7$lange == "nieuwe")])
+    tabel8_mat[i,2] = length(tabel7$uids[which(tabel7$PTName == upts[i] & tabel7$lange == "lange")])
+}
+
+tabel8_df = data.frame('PTName' = upts[-1],
+                       'nieuwe' = tabel8_mat[-1,1],
+                       'lange' = tabel8_mat[-1,2]
+                       )
+tabel8_df 
+```
+
+Tabel 9: Bijwerkingen opgesplitst naar geslacht
+```{r}
+tabel9_mat = matrix(0, length(upts), 2)
+colnames(tabel9_mat) = c("Man", "Vrouw")
+#row.names(tabel7_mat) = upts
+
+for(i in 1:length(upts)){
+    tabel9_mat[i,1] = length(tabel7$uids[which(tabel7$PTName == upts[i] & tabel7$General_Gender == "Man")])
+    tabel9_mat[i,2] = length(tabel7$uids[which(tabel7$PTName == upts[i] & tabel7$General_Gender == "Vrouw")])
+}
+
+tabel9_df = data.frame('PTName' = upts[-1],
+                       'Man' = tabel9_mat[-1,1],
+                       'Vrouw' = tabel9_mat[-1,2]
+                       )
+tabel9_df 
+```
+
+Tabel 10: 
+- Hoe lang duren de bijwerkingen, 
+- wat is de latentietijd,  
+- wat is de belasting, 
+- verandering dosering door bijwerking, 
+- bijwerking behandeld, 
+- wat is de outcome van de
+- bijwerking (over, minder geworden etc
+- enddate, 
+- qol, 
+- outcome etc... laatste waarde mogelijk?
+
+
+# TTR
+```{r}
+# df_table_sd = df_table_sd[which(df_table_sd$IsDefaultSOC == 1),]
+# df_table_sd = df_table_sd[-which(df_table_sd$uids %in% remove_uids),]
+# 
+# tabel10 = df_table_sd[-which(df_table_sd$IsDefaultSOC == 0),]
+tabel10 = df_table_sd[which(!is.na(df_table_sd$PTName)),]
+
+
+#tabel10$ADR_TTR[is.na(tabel10$ADR_TTR)] = 'geen bijwerking'
+
+
+TTR = tabel10$ADR_Recovered_TTR_Unit
+TTR[which(TTR == 'dagen')] = "Na dagen"
+TTR[which(TTR == 'weken')] = "Na weken"
+TTR[which(TTR == 'maanden')] = "Na maanden"
+TTR[which(TTR == 'eenheid')] = "eenheid ?"
+#TTR[which(is.na(tabel10$PTName))] = 'geen bijwerking'
+TTR[which(!is.na(tabel10$PTName) & is.na(TTR))] = 'Niet over'
+
+tabel10$ADR_TTR = TTR
+
+table10_TTR = tabel10 %>%
+                  group_by('Duratie' = ADR_TTR) %>%
+                  summarize('PTName' = length(PTName)
+                  )
+table10_TTR
+table10_TTR_hlt = table(tabel10$HLTGName, tabel10$ADR_TTR)
+```
+
+# latentie tijd
+```{r}
+tabel10$ADR_TTO[is.na(tabel10$PTName)] = 'geen bijwerking'
+tabel10$ADR_TTO[!is.na(tabel10$PTName) & is.na(tabel10$startdate)] = 'geen startdatum'
+
+table10_latentietijd = tabel10 %>%
+                  group_by('Latentie tijd' = ADR_TTO) %>%
+                  summarize('PTName' = length(PTName)
+                  )
+
+table10_latentietijd
+table10_latentietijd_hlt = table(tabel10$HLTGName, tabel10$ADR_TTO)
+table10_latentietijd_hlt
+```
+
+# belasting
+```{r}
+tabel10$ADR_QOL[is.na(tabel10$PTName)] = 'geen bijwerking'
+
+table10_QOL = tabel10 %>%
+                  group_by('belasting' = ADR_QOL) %>%
+                  summarize('PTName' = length(PTName)
+                  )
+table10_QOL
+table10_QOL_hlt = table(tabel10$HLTGName, tabel10$ADR_QOL)
+```
+
+
+- bijwerking behandeld, 
+```{r}
+
+table10_treated = tabel10 %>%
+                  group_by('behandeld' = ADR_Treated) %>%
+                  summarize('PTName' = length(PTName)
+                  )
+table10_treated
+table10_treated_hlt = table(tabel10$HLTGName, tabel10$ADR_Treated)
+```
+
+
+- wat is de outcome van de bijwerking (over, minder geworden etc
+```{r}
+table10_outcome = tabel10 %>%
+                  group_by('Outcome' = ADR_Outcome) %>%
+                  summarize('PTName' = length(PTName)
+                  )
+table10_outcome
+table10_outcome_hlt = table(tabel10$HLTGName, tabel10$ADR_Outcome)
+
+
+```
+
+
+verandering dosering door bijwerking, 
+```{r}
+split = str_split(tabel10$ADR_Change_Dosage_MedCan, pattern = ', ')
+dose_change = character(nrow(tabel10))
+dose_change_anders_mat = matrix(NA, nrow(tabel10), 10)
+dose_change_anders_mat[,1] = tabel10$uids
+for(i in 1:nrow(tabel10)){
+  
+  dose_change[i] = split[[i]][1]
+  if(length(split[[i]]) > 1){
+    dose_change_anders_mat[i,2:(length(split[[i]][-1])+1)] = split[[i]][-1]
+  }
+}
+
+tabel10_dose_change_anders = dose_change_anders_mat[,-which(colSums(is.na(dose_change_anders_mat)) == nrow(tabel10))]
+
+tabel10$dose_change = dose_change
+
+table10_dosechange = tabel10 %>%
+                  group_by('Verandering dosis' = dose_change) %>%
+                  summarize('PTName' = length(PTName)
+                  )
+
+table10_dosechange
+table10_dosechange_hlt = table(tabel10$HLTGName, tabel10$dose_change)
+
+```
+
+Tabel 11: High-gevoel, gewenning en ontwenningsverschijnselen
+
+· Opgesplitst naar geslacht
+
+· Opgesplitst naar productgroep (olie/flos/granulaat)
+```{r}
+df_table11 = df_table1[,c("UserID",
+                         "gender",
+                         "flos",
+                         "oil",
+                         #"other",
+                         "granulate",
+                         "Side_Effect_2_Feeling_High",
+                         "Side_Effect_2_Habituation",
+                         "Side_Effect_2_Withdrawal_Symptoms",
+                         "Withdrawal_Symptoms_Specified")]
+
+df_table11$product = NA
+
+df_table11$product[which(df_table11$oil == 1)] = "Olie"
+df_table11$product[which(df_table11$granulate == 1)] = "Granulaat"
+df_table11$product[which(df_table11$flos== 1)] = "Flos"
+#df_table11$product[which(df_table11$other == 1)] = "Andere medicinale cannabis"  
+#df_table11$product[is.na(df_table11$product)] = "Andere medicinale cannabis"
+#kee rare NA f kijken
+
+
+
+
+table11.p.1 = df_table11[which(df_table11$oil == 1),] %>%
+                  #group_by(product) %>%
+                  summarize('product' = "Olie",
+                            'Aantal' = length(UserID),
+                            'High gevoel' = sum(Side_Effect_2_Feeling_High == "Ja", na.rm = T),
+                            'Gewenning' = sum(Side_Effect_2_Habituation == "Ja", na.rm = T),
+                            'Ontwennigsverschijnselen' = sum(Side_Effect_2_Withdrawal_Symptoms == "Ja", na.rm = T)
+                  )
+
+table11.p.2 = df_table11[which(df_table11$granulate == 1),] %>%
+                  #group_by(product) %>%
+                  summarize('product' = "Granulaat",
+                            'Aantal' = length(UserID),
+                            'High gevoel' = sum(Side_Effect_2_Feeling_High == "Ja", na.rm = T),
+                            'Gewenning' = sum(Side_Effect_2_Habituation == "Ja", na.rm = T),
+                            'Ontwennigsverschijnselen' = sum(Side_Effect_2_Withdrawal_Symptoms == "Ja", na.rm = T)
+                  )
+
+table11.p.3 = df_table11[which(df_table11$flos == 1),] %>%
+                  #group_by(product) %>%
+                  summarize('product' = "Flos",
+                            'Aantal' = length(UserID),
+                            'High gevoel' = sum(Side_Effect_2_Feeling_High == "Ja", na.rm = T),
+                            'Gewenning' = sum(Side_Effect_2_Habituation == "Ja", na.rm = T),
+                            'Ontwennigsverschijnselen' = sum(Side_Effect_2_Withdrawal_Symptoms == "Ja", na.rm = T)
+                  )
+table11.p = rbind(table11.p.1,
+                  table11.p.2,
+                  table11.p.3)
+
+
+table11.g = df_table11 %>%
+                  group_by(gender) %>%
+                  summarize('Aantal' = length(UserID),
+                            'High gevoel' = sum(Side_Effect_2_Feeling_High == "Ja", na.rm = T),
+                            'Gewenning' = sum(Side_Effect_2_Habituation == "Ja", na.rm = T),
+                            'Ontwennigsverschijnselen' = sum(Side_Effect_2_Withdrawal_Symptoms == "Ja", na.rm = T)
+                  )
+table11.g
+
+table11.p 
+```
+
+Tabel 12: Stelling verbetering kwaliteit van leven onderverdeeld naar mannen en vrouwen en ook nieuwe (< 6 mnd) vs langdurige gebruikers (> 6 mnd)
+```{r}
+df_table12 = df_table1[,c("UserID",
+                         "gender",
+                         "Quality_Of_Life_Rack",
+                         "lange", 
+                         "nieuwe")]
+
+
+table12.g = df_table12 %>%
+                  group_by(gender) %>%
+                  summarize('Aantal' = length(UserID),
+                            'Helemaal mee eens' = sum(Quality_Of_Life_Rack == "Helemaal mee eens"),
+                            'Mee eens' = sum(Quality_Of_Life_Rack == "Mee eens"),
+                            'Neutraal' = sum(Quality_Of_Life_Rack == "Neutraal"),
+                            'Mee oneens' = sum(Quality_Of_Life_Rack == "Mee oneens"),
+                            'Helemaal mee oneens' = sum(Quality_Of_Life_Rack == "Helemaal mee oneens")
+                  )
+table12.g
+
+# df_table12$duur_gebruikers = ifelse(df_table12$lange == 1,
+#                                     "Langdurige gebruikers",
+#                                     "Nieuwe gebruikers")
+df_table12$duur_gebruikers = NA
+df_table12$duur_gebruikers[which(df_table12$nieuwe == 1)] = "Nieuwe gebruikers"
+df_table12$duur_gebruikers[which(df_table12$lange == 1)] = "Langdurige gebruikers"
+
+table12.l = df_table12 %>%
+                  group_by(duur_gebruikers) %>%
+                  summarize('Aantal' = length(UserID),
+                            'Helemaal mee eens' = sum(Quality_Of_Life_Rack == "Helemaal mee eens"),
+                            'Mee eens' = sum(Quality_Of_Life_Rack == "Mee eens"),
+                            'Neutraal' = sum(Quality_Of_Life_Rack == "Neutraal"),
+                            'Mee oneens' = sum(Quality_Of_Life_Rack == "Mee oneens"),
+                            'Helemaal mee oneens' = sum(Quality_Of_Life_Rack == "Helemaal mee oneens")
+                  )
+table12.l
+
+```
+
+Tabel 13: Kwaliteit informatie: onderverdeeld in
+
+· Kwaliteit informatie apotheek
+
+· Kwaliteit medische beslissing apotheek
+
+· Kwaliteit informatie arts
+
+· Kwaliteit medische beslissing arts
+
+goed tidy probleem jurriaan
+
+```{r}
+df_table13 = df_table1[,c("UserID",
+                          "gender",
+                          "quality_info_pharma",
+                          "decision_pharma",
+                          "quality_info_md",
+                          "decision_md")]
+
+
+table13.1 = df_table13 %>%
+                  #group_by(gender) %>%
+                  summarize(#'Aantal' = length(UserID),
+                            'Helemaal mee eens' = sum(quality_info_pharma == "Helemaal mee eens"),
+                            'Mee eens' = sum(quality_info_pharma == "Mee eens"),
+                            'Neutraal' = sum(quality_info_pharma == "Neutraal"),
+                            'Mee oneens' = sum(quality_info_pharma == "Mee oneens"),
+                            'Helemaal mee oneens' = sum(quality_info_pharma == "Helemaal mee oneens")
+                            
+                  )
+table13.2 = df_table13 %>%
+                  #group_by(gender) %>%
+                  summarize(#'Aantal' = length(UserID),
+                            'Helemaal mee eens' = sum(decision_pharma == "Helemaal mee eens"),
+                            'Mee eens' = sum(decision_pharma == "Mee eens"),
+                            'Neutraal' = sum(decision_pharma == "Neutraal"),
+                            'Mee oneens' = sum(decision_pharma == "Mee oneens"),
+                            'Helemaal mee oneens' = sum(decision_pharma == "Helemaal mee oneens")
+                  )
+table13.3 = df_table13 %>%
+                  #group_by(gender) %>%
+                  summarize(#'Aantal' = length(UserID),
+                            'Helemaal mee eens' = sum(quality_info_md == "Helemaal mee eens"),
+                            'Mee eens' = sum(quality_info_md == "Mee eens"),
+                            'Neutraal' = sum(quality_info_md == "Neutraal"),
+                            'Mee oneens' = sum(quality_info_md == "Mee oneens"),
+                            'Helemaal mee oneens' = sum(quality_info_md == "Helemaal mee oneens")
+                  )
+table13.4 = df_table13 %>%
+                  #group_by(gender) %>%
+                  summarize(#'Aantal' = length(UserID),
+                            'Helemaal mee eens' = sum(decision_md == "Helemaal mee eens"),
+                            'Mee eens' = sum(decision_md == "Mee eens"),
+                            'Neutraal' = sum(decision_md == "Neutraal"),
+                            'Mee oneens' = sum(decision_md == "Mee oneens"),
+                            'Helemaal mee oneens' = sum(decision_md == "Helemaal mee oneens")
+                  )
+
+table13 = rbind(table13.1,
+                table13.2,
+                table13.3,
+                table13.4)
+row.names(table13) = c("Tevreden over kwaliteit informatie apotheek",
+                          "Betrokken beslissing apotheek",
+                          "Tevreden over kwaliteit informatie arts",
+                          "Betrokken beslissing arts")
+table13
+
+```
+
+-- table 14
+,Experience_with_provided_information_Drawback_expense 'drawback_expense'
+,Reason_Use_MedCan_Rack 'positive_effect_cannabis'
+```{r}
+df_table14 = df_table1[,c("UserID",
+                          "gender",
+                          "drawback_expense",
+                          "positive_effect_cannabis")]
+
+
+table14.1 = df_table14 %>%
+                  #group_by(gender) %>%
+                  summarize(
+                            'Ja' = sum(drawback_expense == "Ja"),
+                            'Nee' = sum(drawback_expense == "Nee"),
+                            'Mijn medicinale cannabis wordt vergoed door de zorgverzekeraar' = sum(drawback_expense == "Mijn medicinale cannabis wordt vergoed door de zorgverzekeraar")
+                  )
+
+table14.2 = df_table14 %>%
+                  #group_by(gender) %>%
+                  summarize(
+                            'Helemaal mee eens' = sum(positive_effect_cannabis == "Helemaal mee eens"),
+                            'Mee eens' = sum(positive_effect_cannabis == "Mee eens"),
+                            'Neutraal' = sum(positive_effect_cannabis == "Neutraal"),
+                            'Mee oneens' = sum(positive_effect_cannabis == "Mee oneens"),
+                            'Helemaal mee oneens' = sum(positive_effect_cannabis == "Helemaal mee oneens")
+                  )
+
+# table14 = rbind(table14.1,
+#                 table14.2)
+row.names(table14.1) = "Zijn kosten een bezwaar?"
+table14.1
+row.names(table14.2) = "Ik ervaar een positief effect op mijn klachten"
+table14.2
+```
+
+-- table 15
+,Knowledge_on_medicinal_cannabis_Law_opium 'law_opium'
+,Knowledge_on_medicinal_cannabis_Affect_driving_skills 'driving_skills'
+```{r}
+df_table15 = df_table1[,c("UserID",
+                          "gender",
+                          "law_opium",
+                          "driving_skills")]
+
+table15.1 = df_table15 %>%
+                  #group_by(gender) %>%
+                  summarize(
+                            'Ja' = sum(law_opium == "Ja, het valt onder de Opiumwet"),
+                            'Nee' = sum(law_opium == "Nee, het valt niet onder de Opiumwet"),
+                            'Weet ik niet' = sum(law_opium == "Weet ik niet")
+                  )
+
+table15.2 = df_table15 %>%
+                  #group_by(gender) %>%
+                  summarize(
+                            'Ja' = sum(driving_skills == "Ja, dat is van invloed op de rijvaardigheid"),
+                            'Nee' = sum(driving_skills == "Nee, dat is niet van invloed op de rijvaardigheid"),
+                            'Weet ik niet' = sum(driving_skills == "Weet ik niet")
+                  )
+table15 = rbind(table15.1,
+                table15.2)
+row.names(table15) = c("Weet u of uw product medicinale cannabis onder de Opiumwet valt?",
+                       "Weet u of uw product medicinale cannabis van invloed is op de rijvaardigheid?")
+table15
+```
+
+Tabel 16: Co-medicatie top 10 van meest gebruikte comedicatie
+```{r}
+df_med_freq = as.data.frame(table(comed_df$GenericDrugName))
+tabel16 = df_med_freq[order(-df_med_freq$Freq),]
+tabel16
+```
+
+Tabel 17: Wisselwerking met comedicatie, indien ja bij welke comedicatie
+```{r}
+df_med_freq_comed_inf = as.data.frame(table(comed_df$GenericDrugName[which(comed_df$Influence_Other_Med_Influence == "Ja")]))
+df_med_freq_comed_inf[order(-df_med_freq_comed_inf$Freq),]
+tabel17 = df_med_freq_comed_inf[order(-df_med_freq_comed_inf$Freq),]
+```
+
+
+# save tables
+
+```{r}
+fname <- paste(
+  "S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\tables\\",
+  "tables_new.xlsx"
+  ,sep=""
+)
+
+cnames = colnames(table1)
+tposed = as.tibble(t(table1))
+row.names(tposed) = cnames
+#table2_startdates_g, table2_startdates_p, table2_choices_g, table2_choices_p, table2_contents_g, table2_contents_p,
+tables_list = list('tabel 1' = t(table1),
+                   'tabel 2 startdates (gender)' = table2_startdates_g, 
+                   'tabel 2 startdates (product)' = table2_startdates_p, 
+                   'tabel 2 keuze (gender)' = table2_choices_g, 
+                   'tabel 2 keuze (product)' = table2_choices_p, 
+                   'tabel 2 tevredenheid (gender)' = table2_contents_g, 
+                   'tabel 2 tevredenheid (product)' = table2_contents_p,
+                  'tabel 3' = t(table3),
+                  'tabel 4' = t(table4),
+                  #'tabel 5.1 (niet af)' = t(df_table5.1  ),
+                  'tabel 5 (voorschijver)' = df_table5.1,
+                  'tabel 5 (ziekte)' = table5_d,
+                  'tabel 5 (symptoms)' = table5_s,
+                  'tabel 6 (lange gebruikers)' = t(table6.l),
+                  'tabel 6 (nieuwe gebruikers)' = t(table6.n),
+                  'tabel 7' = tabel7_df,
+                  'tabel 8' = tabel8_df,
+                  'tabel 9' = tabel9_df,
+                  'tabel 10 (TTR)' = table10_TTR, 
+                  'tabel 10 (TTO)' = table10_latentietijd, 
+                  'tabel 10 (QoL)' = table10_QOL, 
+                  'tabel 10 (behandeling)' = table10_treated, 
+                  'tabel 10 (outcome)' = table10_outcome, 
+                  'tabel 10 (dosis verandering)' = table10_dosechange,
+                  'tabel 10 (TTR_hlt)' = table10_TTR_hlt, 
+                  'tabel 10 (TTO_hlt)' = table10_latentietijd_hlt, 
+                  'tabel 10 (QoL_hlt)' = table10_QOL_hlt, 
+                  'tabel 10 (behandeling_hlt)' = table10_treated_hlt, 
+                  'tabel 10 (outcome_hlt)' = table10_outcome_hlt, 
+                  'tabel 10 dosis verandering hlt' = table10_dosechange_hlt,
+                  'tabel 11 (product)' = t(table11.p),
+                  'tabel 11 (geslacht)' = t(table11.g),
+                  'tabel 12 (geslacht)'= (table12.g),
+                  'tabel 12 (lange vs nieuwe)' = (table12.l),
+                  'tabel 13' = (table13),
+                  'tabel 14.1' = table14.1,
+                  'tabel 14.2' = table14.2,
+                  'tabel 15' = table15,
+                  'tabel 16' = tabel16,
+                  'tabel 17' = tabel17
+                  
+                  )
+
+
+# write.xlsx(tables_list,
+#            file = fname,
+#            rowNames = T,
+#            colNames = T)
+```
+
+```{r}
+n = nrow(df_table1)
+PTs = length(which(df_table1$Side_Effect_Side_Effect == "Ja"))
+#PTs/n
+behandeling_vrije_text = tabel10[,c("uids", "ADR_Treatment_Additional_Info_Text")]
+product_count = as.data.frame(table(df_table2$product))# hoeveel per product
+comed_text = comed_df[,c("UserID", "GenericDrugName", "Influence_Other_Med_Influence", "Influence_Yes_Additional_Info_Text")]
+# df_table_sd2 = df_table_sd[which(df_table_sd$IsDefaultSOC == 1),]
+# df_table_sd2 = df_table_sd2[-which(df_table_sd$uids %in% remove_uids),]
+tables_list2 = list('tabel 2 startdates (gender)' = table2_startdates_g,
+                    'tabel 2 keuze (gender)' = table2_choices_g,
+                    'tabel 2 tevredenheid (gender)' = table2_contents_g,
+                    'tabel 2 keuze anders' = as.data.frame(table2_choice_anders_mat),
+                    'tabel 5 ziekte anders' = as.data.frame(table5_disease_anders_mat),
+                    'tabel 5 symptomen anders' = table5_symptoms_anders_mat,
+                    'tabel 10 dose change anders' = tabel10_dose_change_anders,
+                    'behandeling bijwerking text' = behandeling_vrije_text,
+                    'frequentie per product' = product_count,
+                    'Co-medicatie wisselwerking text' = comed_text,
+                    'proportie met bijwerking' =  PTs/n,
+                    'bron_deelnemer_niveau' = df_table1,
+                    'bron_comedicatie' = comed_df,
+                    'bron_product_nivea' = df_table2,
+                    'bron_bijwerkingen' = df_table_sd
+                    )
+
+# bron_deelnemer_niveau = df_table1
+# bron_comedicatie = comed_df
+# bron_product_nivea = df_table2
+# bron_bijwerkingen = df_table_sd
+# 
+# table2_startdates_g
+# table2_choices_g
+# table2_contents_g
+# 
+# 
+# table2_choice_anders_mat
+# table5_disease_anders_mat
+# table5_symptoms_anders_mat
+# tabel10_dose_change_anders
+# behandeling_vrije_text = tabel10[,c("uids", "ADR_Treatment_Additional_Info_Text")]
+# product_count = as.data.frame(table(df_table2$product))# hoeveel per product
+# comed_text = comed_df[,c("UserID", "GenericDrugName", "Influence_Other_Med_Influence", "Influence_Yes_Additional_Info_Text")]
+# # hoeveel mensen minstens een bijwerking
+# 
+# n = nrow(df_table1)
+# PTs = length(which(df_table1$Side_Effect_Side_Effect == "Ja"))
+# PTs/n
+# 
+# 
+# bron_deelnemer_niveau = df_table1
+# bron_comedicatie = comed_df
+# bron_product_nivea = df_table2
+# bron_bijwerkingen = df_table_sd
+
+
+fname <- paste(
+  "S:\\Gebruikers\\Thomas\\projects\\LIM medicinale cannabis\\tables\\",
+  "nieuwe_tabellen+bronnen.xlsx"
+  ,sep=""
+)
+
+
+write.xlsx(tables_list2,
+           file = fname,
+           rowNames = T,
+           colNames = T)
+
+```
+
+
+
+
+
+
+
+
+
